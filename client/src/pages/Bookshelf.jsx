@@ -11,6 +11,8 @@ export default function Bookshelf() {
   const [zoom, setZoom] = useState(1)
   const [filter, setFilter] = useState({ tier: 'all', status: 'all', search: '' })
   const [loading, setLoading] = useState(true)
+  const [coverLoading, setCoverLoading] = useState(false)
+  const [coverStatus, setCoverStatus] = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -35,12 +37,32 @@ export default function Bookshelf() {
   const coverSize = Math.round(120 * zoom)
 
   const handleFetchCovers = async () => {
-    await fetch('/api/covers/fetch-missing', { method: 'POST' })
-    const [s, b] = await Promise.all([
-      fetch('/api/series').then(r => r.json()),
-      fetch('/api/books').then(r => r.json())
-    ])
-    setSeries(s); setBooks(b)
+    setCoverLoading(true)
+    setCoverStatus('Fetching covers...')
+    try {
+      const res = await fetch('/api/covers/fetch-missing', { method: 'POST' })
+      const data = await res.json()
+      
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch covers')
+      
+      setCoverStatus(`✓ Found ${data.updated} covers (${data.remaining} remaining)`)
+      
+      // Refresh data
+      const [s, b] = await Promise.all([
+        fetch('/api/series').then(r => r.json()),
+        fetch('/api/books').then(r => r.json())
+      ])
+      setSeries(s)
+      setBooks(b)
+      
+      // Clear status message after 3 seconds
+      setTimeout(() => setCoverStatus(''), 3000)
+    } catch (err) {
+      setCoverStatus(`✗ Error: ${err.message}`)
+      setTimeout(() => setCoverStatus(''), 3000)
+    } finally {
+      setCoverLoading(false)
+    }
   }
 
   if (loading) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading your shelf...</div>
@@ -69,7 +91,11 @@ export default function Bookshelf() {
             onChange={e => setZoom(parseFloat(e.target.value))}
             style={{ width: 80 }} />
         </div>
-        <button onClick={handleFetchCovers} style={btnStyle}>Fetch Missing Covers</button>
+        <button onClick={handleFetchCovers} disabled={coverLoading} 
+          style={{...btnStyle, opacity: coverLoading ? 0.6 : 1, cursor: coverLoading ? 'not-allowed' : 'pointer'}}>
+          {coverLoading ? 'Fetching...' : 'Fetch Missing Covers'}
+        </button>
+        {coverStatus && <span style={{ fontSize: 13, color: coverStatus.startsWith('✓') ? '#5cb85c' : '#e74c3c' }}>{coverStatus}</span>}
         <button onClick={() => navigate('/import')} style={{ ...btnStyle, background: '#5cb85c22', color: '#5cb85c' }}>
           + Import
         </button>
