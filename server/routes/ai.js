@@ -96,7 +96,7 @@ router.post('/research', async (req, res) => {
 Include: full series name, author, number of books, genre, brief synopsis, publication status (ongoing/complete), average ratings, and similar series.
 Return as JSON: {"name":"...","author":"...","book_count":N,"status":"ongoing/complete","genre":"...","synopsis":"...","similar_series":["..."],"goodreads_rating":N}`
       }]
-    ]);
+    });
 
     const lastContent = message.content[message.content.length - 1];
     const text = lastContent.type === 'text' ? lastContent.text : '';
