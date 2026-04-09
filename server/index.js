@@ -28,10 +28,22 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 async function start() {
-  await initDb();
-  app.listen(PORT, () => {
-    console.log(`Bookshelf running on port ${PORT}`);
-  });
+  if (!process.env.DATABASE_URL) {
+    console.error('ERROR: DATABASE_URL environment variable is not set!');
+    console.error('Please set DATABASE_URL to your PostgreSQL connection string.');
+    process.exit(1);
+  }
+  
+  try {
+    await initDb();
+    app.listen(PORT, () => {
+      console.log(`Bookshelf running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error('Failed to initialize database:', err.message);
+    console.error('Check that DATABASE_URL is correct and the database is accessible.');
+    process.exit(1);
+  }
 }
 
-start().catch(console.error);
+start();
