@@ -90,8 +90,10 @@ export default function Bookshelf() {
       const seriesName = (book.series_name || linkedSeries?.name || inferred?.name || '').trim()
       const authorName = (book.author_name || linkedSeries?.author_name || '').trim()
       if (!book.series_name && !linkedSeries?.name && inferred?.name) inferredSeriesCount++
-      const key = seriesName
-        ? `${normalizeKeyPart(authorName)}::${normalizeKeyPart(seriesName)}`
+      const key = book.series_id
+        ? `series-id:${book.series_id}`
+        : seriesName
+          ? `${normalizeKeyPart(authorName)}::${normalizeKeyPart(seriesName)}`
         : `book-${book.id}`
 
       if (!groups[key]) {

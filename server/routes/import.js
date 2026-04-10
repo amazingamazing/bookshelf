@@ -116,6 +116,8 @@ function canonicalAuthorKey(author) {
     .trim();
 }
 
+const TIER_WEIGHT = { S: 5, A: 4, B: 3, C: 2, D: 1, Unranked: 0 };
+
 // Helper: find or create author
 async function findOrCreateAuthor(client, name) {
   const trimmed = name?.trim();
@@ -327,6 +329,91 @@ router.post('/duplicates/apply', async (req, res) => {
 
     await client.query('COMMIT');
     res.json({ success: true, kept: keepId, merged: !!merge, deleted, cover_url: selectedCover });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Merge split series rows that share the same canonical series name.
+router.post('/repair-series', async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(`
+      SELECT
+        s.id, s.name, s.author_id, s.tier, s.cover_url, s.notes, s.status,
+        COUNT(b.id)::int AS book_count
+      FROM series s
+      LEFT JOIN books b ON b.series_id = s.id
+      GROUP BY s.id
+      ORDER BY s.id
+    `);
+
+    const groups = new Map();
+    for (const s of rows) {
+      const key = canonicalSeriesKey(s.name);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(s);
+    }
+
+    const mergeGroups = Array.from(groups.values()).filter(g => g.length > 1);
+    const report = [];
+    let mergedSeriesRows = 0;
+    let movedBooks = 0;
+
+    for (const group of mergeGroups) {
+      const sorted = [...group].sort((a, b) => {
+        if (b.book_count !== a.book_count) return b.book_count - a.book_count;
+        return a.id - b.id;
+      });
+      const keep = sorted[0];
+      const remove = sorted.slice(1);
+      if (!remove.length) continue;
+
+      const keepTier = keep.tier || 'Unranked';
+      const bestTier = [...group].reduce((best, cur) => {
+        return (TIER_WEIGHT[cur.tier] || 0) > (TIER_WEIGHT[best] || 0) ? cur.tier : best;
+      }, keepTier);
+
+      const bestCover = keep.cover_url || group.find(s => s.cover_url)?.cover_url || null;
+      const mergedNotes = [keep.notes, ...remove.map(r => r.notes)].filter(Boolean).join('\n\n').trim() || null;
+
+      await client.query(
+        `UPDATE series
+         SET tier = $1,
+             cover_url = COALESCE($2, cover_url),
+             notes = COALESCE($3, notes)
+         WHERE id = $4`,
+        [bestTier, bestCover, mergedNotes, keep.id]
+      );
+
+      const removeIds = remove.map(r => r.id);
+      const moved = await client.query('UPDATE books SET series_id = $1 WHERE series_id = ANY($2::int[])', [keep.id, removeIds]);
+      movedBooks += moved.rowCount;
+      await client.query('UPDATE reading_queue SET series_id = $1 WHERE series_id = ANY($2::int[])', [keep.id, removeIds]);
+      const del = await client.query('DELETE FROM series WHERE id = ANY($1::int[])', [removeIds]);
+      mergedSeriesRows += del.rowCount;
+
+      report.push({
+        canonical: canonicalSeriesKey(keep.name),
+        kept: { id: keep.id, name: keep.name },
+        removed: remove.map(r => ({ id: r.id, name: r.name })),
+        moved_books: moved.rowCount
+      });
+    }
+
+    await client.query('COMMIT');
+    res.json({
+      success: true,
+      groupsMerged: report.length,
+      mergedSeriesRows,
+      movedBooks,
+      report
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });

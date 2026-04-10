@@ -10,6 +10,7 @@ export default function Import() {
   const [dupes, setDupes] = useState({ groups: [], totalGroups: 0 })
   const [dupeStatus, setDupeStatus] = useState(null)
   const [dupeChoiceByGroup, setDupeChoiceByGroup] = useState({})
+  const [seriesRepairStatus, setSeriesRepairStatus] = useState(null)
 
   useEffect(() => {
     loadCoverStats()
@@ -173,6 +174,22 @@ export default function Import() {
       await loadDuplicates()
     } catch (err) {
       setDupeStatus({ state: 'error', message: err.message })
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const handleRepairSeries = async () => {
+    setLoading('series-repair')
+    setSeriesRepairStatus({ state: 'loading' })
+    try {
+      const res = await fetch('/api/import/repair-series', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to repair series')
+      setSeriesRepairStatus({ state: 'done', ...data })
+      await loadDuplicates()
+    } catch (err) {
+      setSeriesRepairStatus({ state: 'error', message: err.message })
     } finally {
       setLoading(null)
     }
@@ -441,6 +458,30 @@ export default function Import() {
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </Section>
+      </SectionGroup>
+
+      <SectionGroup title="🔧 Series Cleanup" description="Fix split series rows caused by author-variation imports (e.g. co-author credits).">
+        <Section title="Repair Split Series" icon="🪄" description="Merges series rows with the same canonical name, moves books to the kept row, and preserves best tier/cover.">
+          <button
+            onClick={handleRepairSeries}
+            disabled={loading === 'series-repair'}
+            style={{ ...btnStyle, background: '#6ea8fe22', border: '1px solid #6ea8fe55', color: '#6ea8fe' }}
+          >
+            {loading === 'series-repair' ? 'Repairing...' : 'Repair Split Series'}
+          </button>
+
+          {seriesRepairStatus?.state === 'loading' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#9a9488' }}>Merging split series rows...</div>
+          )}
+          {seriesRepairStatus?.state === 'error' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#e74c3c' }}>✗ {seriesRepairStatus.message}</div>
+          )}
+          {seriesRepairStatus?.state === 'done' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#5cb85c' }}>
+              ✓ Merged {seriesRepairStatus.groupsMerged || 0} series groups ({seriesRepairStatus.mergedSeriesRows || 0} rows removed, {seriesRepairStatus.movedBooks || 0} books reassigned)
             </div>
           )}
         </Section>
