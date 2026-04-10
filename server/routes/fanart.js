@@ -81,6 +81,7 @@ router.get('/deviantart', async (req, res) => {
     }
 
     const dedupedQueries = Array.from(new Set(searchQueries.map(q => q.trim()).filter(Boolean)));
+    const relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
     const merged = [];
     for (const query of dedupedQueries) {
       const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
@@ -93,6 +94,7 @@ router.get('/deviantart', async (req, res) => {
     for (const item of merged) {
       if (seen.has(item.link)) continue;
       seen.add(item.link);
+      if (!passesRelevance(item, relevanceProfiles)) continue;
       unique.push(item);
       if (unique.length >= limit * 12) break;
     }
@@ -187,9 +189,11 @@ function parseRssItem(raw) {
   const guid = getTag(raw, 'guid');
   const creator = decodeHtml(getDcCreator(raw));
   const pubDate = getTag(raw, 'pubDate');
+  const descriptionHtml = getTag(raw, 'description');
   const mediaContent = getMediaTag(raw, 'media:content');
   const mediaThumbnail = getMediaTag(raw, 'media:thumbnail');
-  const descImage = getImageFromDescription(getTag(raw, 'description'));
+  const descImage = getImageFromDescription(descriptionHtml);
+  const descriptionText = decodeHtml(stripHtml(descriptionHtml));
 
   const imageUrl = mediaContent.url || descImage || mediaThumbnail.url;
   const urlDimensions = extractDimensionsFromUrl(imageUrl);
@@ -204,8 +208,10 @@ function parseRssItem(raw) {
     published_at: pubDate || null,
     image_url: imageUrl,
     deviation_id: parseDeviationId(guid),
+    description_text: descriptionText,
     image_width: imageWidth,
-    image_height: imageHeight
+    image_height: imageHeight,
+    creator_key: deriveCreatorKey(creator, link)
   };
 }
 
@@ -413,30 +419,79 @@ function diversifyByCreator(items, limit, perCreatorCap) {
   if (!Array.isArray(items) || !items.length) return [];
   const byCreator = new Map();
   const selected = [];
-  const remaining = [];
 
   for (const item of items) {
-    const key = normalizeCreator(item.creator);
+    const key = normalizeCreator(item.creator_key || item.creator);
     const count = byCreator.get(key) || 0;
     if (count < perCreatorCap) {
       selected.push(item);
       byCreator.set(key, count + 1);
       if (selected.length >= limit) return selected;
-    } else {
-      remaining.push(item);
     }
   }
 
-  for (const item of remaining) {
-    selected.push(item);
-    if (selected.length >= limit) break;
-  }
+  // Strict cap: if we don't have enough unique creators, return fewer items.
   return selected;
 }
 
 function normalizeCreator(creator) {
   const raw = String(creator || '').trim().toLowerCase();
   return raw || '__unknown_creator__';
+}
+
+function deriveCreatorKey(creator, link) {
+  const fromCreator = normalizeCreator(creator);
+  if (fromCreator && fromCreator !== '__unknown_creator__') return fromCreator;
+  const str = String(link || '');
+  const match = str.match(/https?:\/\/([a-z0-9-]+)\.deviantart\.com/i);
+  if (!match) return '__unknown_creator__';
+  return String(match[1] || '').toLowerCase();
+}
+
+function buildRelevanceProfile(query) {
+  const tokens = tokenize(query)
+    .filter(token => token.length >= 3)
+    .filter(token => !isNoiseToken(token));
+  const phrase = String(query || '').toLowerCase().replace(/\s+fan\s+art/g, '').trim();
+  return { query, tokens, phrase };
+}
+
+function passesRelevance(item, profiles) {
+  if (!profiles.length) return true;
+  const hay = normalizeSearchText([
+    item.title,
+    item.description_text,
+    ...(item.tags || []),
+    item.query
+  ].join(' '));
+
+  for (const profile of profiles) {
+    const phrase = normalizeSearchText(profile.phrase || '');
+    if (phrase && phrase.length >= 8 && hay.includes(phrase)) return true;
+
+    const matches = profile.tokens.reduce((acc, token) => acc + (hay.includes(token) ? 1 : 0), 0);
+    if (matches >= 2) return true;
+  }
+  return false;
+}
+
+function tokenize(value) {
+  return normalizeSearchText(value).split(' ').filter(Boolean);
+}
+
+function normalizeSearchText(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function isNoiseToken(token) {
+  return [
+    'fan', 'art', 'series', 'book', 'books', 'review', 'movie', 'pdf',
+    'the', 'and', 'with', 'from', 'for', 'this', 'that', 'jordan', 'brandon'
+  ].includes(token);
+}
+
+function stripHtml(value) {
+  return String(value || '').replace(/<[^>]+>/g, ' ');
 }
 
 function normalizeSortMode(value) {
