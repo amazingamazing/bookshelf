@@ -4,4 +4,3 @@ client/dist/
 .env
 *.log
 .DS_Store
-.cursorrules.md
