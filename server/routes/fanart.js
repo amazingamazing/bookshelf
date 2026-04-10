@@ -81,6 +81,10 @@ router.get('/deviantart', async (req, res) => {
     }
 
     const dedupedQueries = Array.from(new Set(searchQueries.map(q => q.trim()).filter(Boolean)));
+    const anchorPhrases = dedupedQueries
+      .map(stripFanArtSuffix)
+      .map(v => String(v || '').trim())
+      .filter(v => v.length >= 6);
     const relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
     const merged = [];
     for (const query of dedupedQueries) {
@@ -94,7 +98,7 @@ router.get('/deviantart', async (req, res) => {
     for (const item of merged) {
       if (seen.has(item.link)) continue;
       seen.add(item.link);
-      if (!passesRelevance(item, relevanceProfiles)) continue;
+      if (!passesRelevance(item, relevanceProfiles, anchorPhrases)) continue;
       unique.push(item);
       if (unique.length >= limit * 12) break;
     }
@@ -419,6 +423,7 @@ function diversifyByCreator(items, limit, perCreatorCap) {
   if (!Array.isArray(items) || !items.length) return [];
   const byCreator = new Map();
   const selected = [];
+  const overflow = [];
 
   for (const item of items) {
     const key = normalizeCreator(item.creator_key || item.creator);
@@ -427,10 +432,20 @@ function diversifyByCreator(items, limit, perCreatorCap) {
       selected.push(item);
       byCreator.set(key, count + 1);
       if (selected.length >= limit) return selected;
+    } else {
+      overflow.push(item);
     }
   }
 
-  // Strict cap: if we don't have enough unique creators, return fewer items.
+  // Soft fallback: avoid collapsing to too few results.
+  const minWanted = Math.min(limit, Math.max(6, Math.ceil(limit * 0.7)));
+  if (selected.length < minWanted) {
+    for (const item of overflow) {
+      selected.push(item);
+      if (selected.length >= limit) break;
+    }
+  }
+
   return selected;
 }
 
@@ -456,14 +471,19 @@ function buildRelevanceProfile(query) {
   return { query, tokens, phrase };
 }
 
-function passesRelevance(item, profiles) {
+function passesRelevance(item, profiles, anchorPhrases) {
   if (!profiles.length) return true;
   const hay = normalizeSearchText([
     item.title,
     item.description_text,
-    ...(item.tags || []),
-    item.query
+    ...(item.tags || [])
   ].join(' '));
+
+  // First, prefer direct phrase anchoring against the intended series/book strings.
+  for (const anchor of (anchorPhrases || [])) {
+    const normalizedAnchor = normalizeSearchText(anchor);
+    if (normalizedAnchor && hay.includes(normalizedAnchor)) return true;
+  }
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
@@ -492,6 +512,10 @@ function isNoiseToken(token) {
 
 function stripHtml(value) {
   return String(value || '').replace(/<[^>]+>/g, ' ');
+}
+
+function stripFanArtSuffix(value) {
+  return String(value || '').replace(/\s+fan\s+art\s*$/i, '').trim();
 }
 
 function normalizeSortMode(value) {
