@@ -7,7 +7,7 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 // Get AI recommendations based on user's library
 router.post('/recommend', async (req, res) => {
   try {
-    const { seriesIds, prompt: userPrompt } = req.body;
+    const { prompt: userPrompt } = req.body;
 
     // Get user's top-rated series for context
     const { rows: topSeries } = await pool.query(`
@@ -38,7 +38,8 @@ Return ONLY the JSON array, no other text.`;
       system: systemPrompt
     });
 
-    const text = message.content[0].text;
+    const lastContent = message.content[message.content.length - 1];
+    const text = lastContent.type === 'text' ? lastContent.text : '';
     const recommendations = JSON.parse(text.replace(/```json\n?|\n?```/g, '').trim());
     res.json(recommendations);
   } catch (err) {
