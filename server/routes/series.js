@@ -27,7 +27,14 @@ router.get('/', async (req, res) => {
         s.id, s.name, s.author_id, s.tier, s.rating, s.status, s.notes, s.cover_url, a.name
       ORDER BY s.tier, s.name
     `);
-    res.json(rows);
+    const { rows: genreRows } = await pool.query(`
+      SELECT sg.series_id, ARRAY_AGG(g.name ORDER BY g.name) AS genres
+      FROM series_genres sg
+      JOIN genres g ON g.id = sg.genre_id
+      GROUP BY sg.series_id
+    `);
+    const bySeries = new Map(genreRows.map(r => [r.series_id, r.genres || []]));
+    res.json(rows.map(r => ({ ...r, genres: bySeries.get(r.id) || [] })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -74,7 +81,15 @@ router.get('/:id', async (req, res) => {
       WHERE b.series_id = $1 ORDER BY b.series_order
     `, [req.params.id]);
 
-    res.json({ ...series, books });
+    const { rows: genreRows } = await pool.query(`
+      SELECT g.name
+      FROM series_genres sg
+      JOIN genres g ON g.id = sg.genre_id
+      WHERE sg.series_id = $1
+      ORDER BY g.name
+    `, [req.params.id]);
+
+    res.json({ ...series, books, genres: genreRows.map(r => r.name) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

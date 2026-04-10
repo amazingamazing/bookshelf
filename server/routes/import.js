@@ -2,6 +2,7 @@ const router = require('express').Router();
 const multer = require('multer');
 const { parse } = require('csv-parse/sync');
 const { pool } = require('../db');
+const { extractAudibleGenreLabels, normalized } = require('../utils/genres');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -114,6 +115,34 @@ function canonicalAuthorKey(author) {
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+async function findOrCreateGenre(client, label) {
+  const name = (label || '').trim();
+  if (!name) return null;
+  const norm = normalized(name);
+  if (!norm) return null;
+
+  let { rows } = await client.query('SELECT id FROM genres WHERE normalized_name=$1', [norm]);
+  if (rows[0]) return rows[0].id;
+
+  const inserted = await client.query(
+    'INSERT INTO genres (name, normalized_name) VALUES ($1,$2) ON CONFLICT (normalized_name) DO UPDATE SET name=EXCLUDED.name RETURNING id',
+    [name, norm]
+  );
+  return inserted.rows[0].id;
+}
+
+async function attachGenresToSeries(client, seriesId, labels) {
+  if (!seriesId || !labels?.length) return;
+  for (const label of labels) {
+    const genreId = await findOrCreateGenre(client, label);
+    if (!genreId) continue;
+    await client.query(
+      'INSERT INTO series_genres (series_id, genre_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+      [seriesId, genreId]
+    );
+  }
 }
 
 const TIER_WEIGHT = { S: 5, A: 4, B: 3, C: 2, D: 1, Unranked: 0 };
@@ -539,6 +568,10 @@ router.post('/audible', upload.single('file'), async (req, res) => {
           const seriesId = (seriesName && authorId)
             ? await findOrCreateSeries(client, seriesName, authorId)
             : null;
+          const genreLabels = extractAudibleGenreLabels(row);
+          if (seriesId && genreLabels.length) {
+            await attachGenresToSeries(client, seriesId, genreLabels);
+          }
 
           // Skip if already imported, but backfill cover if missing
           if (asin) {

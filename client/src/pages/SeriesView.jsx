@@ -71,6 +71,13 @@ export default function SeriesView() {
             <Chip label={`${series.books_read} read`} color="#5cb85c22" text="#5cb85c" />
             <Chip label={series.status} />
           </div>
+          {series.genres?.length > 0 && (
+            <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+              {series.genres.map(g => (
+                <Chip key={g} label={g} color="#6ea8fe22" text="#6ea8fe" />
+              ))}
+            </div>
+          )}
 
           {editing ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

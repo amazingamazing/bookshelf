@@ -56,6 +56,20 @@ async function initDb() {
         reason TEXT,
         created_at TIMESTAMP DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS genres (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL UNIQUE,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS series_genres (
+        series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+        genre_id INTEGER NOT NULL REFERENCES genres(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (series_id, genre_id)
+      );
     `);
     console.log('Database initialized');
   } finally {
