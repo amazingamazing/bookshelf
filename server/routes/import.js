@@ -17,6 +17,89 @@ function normalizeTitle(title) {
     .trim();
 }
 
+function normalizeSeriesName(raw) {
+  if (!raw) return null;
+  let name = String(raw).trim();
+  if (!name) return null;
+
+  if (name.includes(',')) {
+    name = name.split(',')[0].trim();
+  }
+
+  name = name
+    .replace(/\(\s*book\s*[\d.\-]*\s*\)/ig, '')
+    .replace(/\(\s*#\s*[\d.\-]+\s*\)/ig, '')
+    .replace(/\s*series$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return name || null;
+}
+
+function canonicalSeriesKey(raw) {
+  const name = normalizeSeriesName(raw);
+  if (!name) return null;
+  return name
+    .toLowerCase()
+    .replace(/^the\s+/i, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseSeriesOrder(raw) {
+  if (!raw) return null;
+  const m = String(raw).match(/[\d.]+/);
+  if (!m) return null;
+  const n = parseFloat(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseGoodreadsSeriesFromTitle(title) {
+  if (!title) return { cleanTitle: '', seriesName: null, seriesOrder: null };
+  const t = String(title).trim();
+
+  let m = t.match(/^(.*?)\s*\(([^()]+?)(?:,\s*#\s*([\d.\-]+)|\s+#\s*([\d.\-]+))\)\s*$/i);
+  if (m) {
+    return {
+      cleanTitle: normalizeTitle(m[1].trim()),
+      seriesName: normalizeSeriesName(m[2]),
+      seriesOrder: parseSeriesOrder(m[3] || m[4] || '1')
+    };
+  }
+
+  m = t.match(/^(.*?)\s*\(([^()]+?),\s*#\s*([\d.]+)\s*-\s*[\d.]+\)\s*$/i);
+  if (m) {
+    return {
+      cleanTitle: normalizeTitle(m[1].trim()),
+      seriesName: normalizeSeriesName(m[2]),
+      seriesOrder: parseSeriesOrder(m[3])
+    };
+  }
+
+  return { cleanTitle: normalizeTitle(t), seriesName: null, seriesOrder: null };
+}
+
+function parseAudibleSeries(row, title) {
+  let seriesName = normalizeSeriesName(row['Series'] || row['series'] || '');
+  let seriesOrder = parseSeriesOrder(row['Book Numbers'] || row['Series Sequence'] || '');
+
+  const byTitle = title?.match(/:\s*([^,:]+?),\s*Book\s+([\d.\-]+)\s*$/i);
+  if (!seriesName && byTitle) {
+    seriesName = normalizeSeriesName(byTitle[1]);
+    seriesOrder = seriesOrder || parseSeriesOrder(byTitle[2]);
+  }
+
+  const subtitle = (row['Subtitle'] || row['subtitle'] || '').trim();
+  const bySubtitle = subtitle.match(/^([^,:]+?),\s*Book\s+([\d.\-]+)\s*$/i);
+  if (!seriesName && bySubtitle) {
+    seriesName = normalizeSeriesName(bySubtitle[1]);
+    seriesOrder = seriesOrder || parseSeriesOrder(bySubtitle[2]);
+  }
+
+  return { seriesName, seriesOrder };
+}
+
 // Helper: find or create author
 async function findOrCreateAuthor(client, name) {
   const trimmed = name?.trim();
@@ -31,20 +114,46 @@ async function findOrCreateAuthor(client, name) {
 
 // Helper: find or create series
 async function findOrCreateSeries(client, name, authorId) {
-  if (!name?.trim()) return null;
-  let { rows } = await client.query(
-    'SELECT id FROM series WHERE LOWER(name)=LOWER($1) AND author_id=$2',
-    [name.trim(), authorId]
+  const cleaned = normalizeSeriesName(name);
+  const key = canonicalSeriesKey(cleaned);
+  if (!cleaned || !key || !authorId) return null;
+
+  const { rows } = await client.query(
+    'SELECT id, name FROM series WHERE author_id=$1',
+    [authorId]
   );
-  if (!rows[0]) {
-    const res = await client.query(
-      'INSERT INTO series (name, author_id) VALUES ($1,$2) RETURNING id',
-      [name.trim(), authorId]
-    );
-    rows = res.rows;
-  }
-  return rows[0].id;
+  const match = rows.find(r => canonicalSeriesKey(r.name) === key);
+  if (match) return match.id;
+
+  const res = await client.query(
+    'INSERT INTO series (name, author_id) VALUES ($1,$2) RETURNING id',
+    [cleaned, authorId]
+  );
+  return res.rows[0].id;
 }
+
+// Nuke test data for rapid re-import cycles
+router.post('/reset-all', async (_req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows: beforeRows } = await client.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM authors) AS authors,
+        (SELECT COUNT(*)::int FROM series) AS series,
+        (SELECT COUNT(*)::int FROM books) AS books,
+        (SELECT COUNT(*)::int FROM reading_queue) AS queue
+    `);
+    await client.query('TRUNCATE TABLE reading_queue, books, series, authors RESTART IDENTITY CASCADE');
+    await client.query('COMMIT');
+    res.json({ success: true, deleted: beforeRows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
 
 // Goodreads CSV import
 router.post('/goodreads', upload.single('file'), async (req, res) => {
@@ -73,19 +182,10 @@ router.post('/goodreads', upload.single('file'), async (req, res) => {
 
           const authorId = await findOrCreateAuthor(client, authorRaw);
 
-          // Parse series from title (Goodreads often puts series in parens)
-          let seriesName = null;
-          let seriesOrder = null;
-          let cleanTitle = title;
-
-          const seriesMatch = title.match(/^(.*?)\s*\(([^,#]+)(?:[,#]\s*([\d.]+))?\)\s*$/);
-          if (seriesMatch) {
-            cleanTitle = seriesMatch[1].trim();
-            seriesName = seriesMatch[2].trim();
-            seriesOrder = seriesMatch[3] ? parseFloat(seriesMatch[3]) : 1;
-          }
-          // Belt-and-suspenders: normalize any remaining subtitle cruft
-          cleanTitle = normalizeTitle(cleanTitle);
+          const parsed = parseGoodreadsSeriesFromTitle(title);
+          const cleanTitle = parsed.cleanTitle;
+          const seriesName = parsed.seriesName;
+          const seriesOrder = parsed.seriesOrder;
 
           const seriesId = authorId ? await findOrCreateSeries(client, seriesName, authorId) : null;
 
@@ -163,19 +263,10 @@ router.post('/audible', upload.single('file'), async (req, res) => {
 
           const authorId = await findOrCreateAuthor(client, authorRaw);
 
-          // Try to detect series from title
-          let seriesName = (row['Series'] || row['series'] || '')?.trim() || null;
-          let seriesOrder = row['Series Sequence'] ? parseFloat(row['Series Sequence']) : null;
-
-          // Normalize first to strip "Title: Series Name, Book N" patterns,
-          // then try to pull series number out of what remains if no Series column
-          const normalizedTitle = normalizeTitle(title);
-          let cleanTitle = normalizedTitle;
-
-          if (!seriesName) {
-            const m = title.match(/^(.*?)\s*,?\s*Book\s+([\d.]+)/i);
-            if (m) { seriesOrder = parseFloat(m[2]); }
-          }
+          const parsedSeries = parseAudibleSeries(row, title);
+          const seriesName = parsedSeries.seriesName;
+          const seriesOrder = parsedSeries.seriesOrder;
+          const cleanTitle = normalizeTitle(title);
 
           const seriesId = (seriesName && authorId)
             ? await findOrCreateSeries(client, seriesName, authorId)
@@ -204,8 +295,13 @@ router.post('/audible', upload.single('file'), async (req, res) => {
 
           if (existing.rows[0]) {
             await client.query(
-              'UPDATE books SET audible_asin=$1, cover_url=COALESCE(cover_url,$2) WHERE id=$3',
-              [asin, coverUrl, existing.rows[0].id]
+              `UPDATE books
+               SET audible_asin=$1,
+                   cover_url=COALESCE(cover_url,$2),
+                   series_id=COALESCE(series_id,$3),
+                   series_order=COALESCE(series_order,$4)
+               WHERE id=$5`,
+              [asin, coverUrl, seriesId, seriesOrder, existing.rows[0].id]
             );
             results.skipped++;
           } else {

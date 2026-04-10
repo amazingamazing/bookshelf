@@ -6,6 +6,7 @@ export default function Import() {
   const [manualForm, setManualForm] = useState({ title: '', author: '', series: '', seriesOrder: '' })
   const [coverStats, setCoverStats] = useState({ total: 0, withCovers: 0, missing: 0 })
   const [coverStatus, setCoverStatus] = useState(null)
+  const [resetStatus, setResetStatus] = useState(null)
 
   useEffect(() => {
     loadCoverStats()
@@ -94,6 +95,26 @@ export default function Import() {
       await loadCoverStats()
     } catch (err) {
       setCoverStatus({ state: 'error', message: err.message })
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const handleResetAll = async () => {
+    const ok = window.confirm('This will delete ALL authors, series, books, and queue data. Continue?')
+    if (!ok) return
+    setLoading('reset')
+    setResetStatus({ state: 'loading' })
+    try {
+      const res = await fetch('/api/import/reset-all', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to clear data')
+      setResetStatus({ state: 'done', deleted: data.deleted })
+      setResults(null)
+      setCoverStatus(null)
+      await loadCoverStats()
+    } catch (err) {
+      setResetStatus({ state: 'error', message: err.message })
     } finally {
       setLoading(null)
     }
@@ -251,6 +272,31 @@ export default function Import() {
               </div>
             )}
           </div>
+        </Section>
+      </SectionGroup>
+
+      <SectionGroup title="🧹 Reset Test Data" description="Clear all current library data so you can rerun imports with new normalization logic.">
+        <Section title="Danger Zone" icon="⚠️" description="Deletes books, series, authors, and reading queue rows from the database. Use only for test resets.">
+          <button
+            onClick={handleResetAll}
+            disabled={loading === 'reset'}
+            style={{ ...btnStyle, background: '#e74c3c22', border: '1px solid #e74c3c44', color: '#e74c3c' }}
+          >
+            {loading === 'reset' ? 'Clearing...' : 'Clear All Library Data'}
+          </button>
+          {resetStatus?.state === 'loading' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#9a9488' }}>Deleting data...</div>
+          )}
+          {resetStatus?.state === 'error' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#e74c3c' }}>
+              ✗ {resetStatus.message}
+            </div>
+          )}
+          {resetStatus?.state === 'done' && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#5cb85c' }}>
+              ✓ Cleared {resetStatus.deleted?.books || 0} books, {resetStatus.deleted?.series || 0} series, {resetStatus.deleted?.authors || 0} authors
+            </div>
+          )}
         </Section>
       </SectionGroup>
     </div>

@@ -8,10 +8,11 @@
 - Deployed on Render
 
 ## Current issues
-- [ ] covers not showing post import
 - [ ] how to handle adding covers not in open library
 - [ ] how to handle duplicate books already added
-- [ ] no series display option
+- [ ] series are grouped incorrectly
+- [ ] using js not typescript
+- [ ] using inline styling not CSS files
 
 ## Key decisions
 - series are ranked not individual books
