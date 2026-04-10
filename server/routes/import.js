@@ -266,31 +266,6 @@ router.post('/duplicates/apply', async (req, res) => {
     );
 
     const pick = (field) => keep[field] || others.find(r => r[field])?.[field] || null;
-    await client.query(
-      `UPDATE books
-       SET goodreads_id=COALESCE(goodreads_id,$1),
-           audible_asin=COALESCE(audible_asin,$2),
-           isbn=COALESCE(isbn,$3),
-           published_date=COALESCE(published_date,$4),
-           date_read=COALESCE(date_read,$5),
-           series_id=COALESCE(series_id,$6),
-           series_order=COALESCE(series_order,$7),
-           page_count=COALESCE(page_count,$8),
-           rating=COALESCE(rating,$9)
-       WHERE id=$10`,
-      [
-        pick('goodreads_id'),
-        pick('audible_asin'),
-        pick('isbn'),
-        pick('published_date'),
-        pick('date_read'),
-        pick('series_id'),
-        pick('series_order'),
-        pick('page_count'),
-        pick('rating'),
-        keepId
-      ]
-    );
 
     let deleted = 0;
     if (merge) {
@@ -300,6 +275,54 @@ router.post('/duplicates/apply', async (req, res) => {
         const del = await client.query('DELETE FROM books WHERE id = ANY($1::int[])', [removeIds]);
         deleted = del.rowCount;
       }
+
+      // Now that donor rows are removed, it is safe to copy unique identifiers.
+      await client.query(
+        `UPDATE books
+         SET goodreads_id=COALESCE(goodreads_id,$1),
+             audible_asin=COALESCE(audible_asin,$2),
+             isbn=COALESCE(isbn,$3),
+             published_date=COALESCE(published_date,$4),
+             date_read=COALESCE(date_read,$5),
+             series_id=COALESCE(series_id,$6),
+             series_order=COALESCE(series_order,$7),
+             page_count=COALESCE(page_count,$8),
+             rating=COALESCE(rating,$9)
+         WHERE id=$10`,
+        [
+          pick('goodreads_id'),
+          pick('audible_asin'),
+          pick('isbn'),
+          pick('published_date'),
+          pick('date_read'),
+          pick('series_id'),
+          pick('series_order'),
+          pick('page_count'),
+          pick('rating'),
+          keepId
+        ]
+      );
+    } else {
+      // In non-merge mode, only propagate non-unique fields.
+      await client.query(
+        `UPDATE books
+         SET published_date=COALESCE(published_date,$1),
+             date_read=COALESCE(date_read,$2),
+             series_id=COALESCE(series_id,$3),
+             series_order=COALESCE(series_order,$4),
+             page_count=COALESCE(page_count,$5),
+             rating=COALESCE(rating,$6)
+         WHERE id=$7`,
+        [
+          pick('published_date'),
+          pick('date_read'),
+          pick('series_id'),
+          pick('series_order'),
+          pick('page_count'),
+          pick('rating'),
+          keepId
+        ]
+      );
     }
 
     await client.query('COMMIT');
