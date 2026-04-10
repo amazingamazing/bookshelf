@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 
+const FANART_PREFS_KEY = 'bookshelf:fanart-prefs:v1'
+
 export default function Import() {
   const [results, setResults] = useState(null)
   const [loading, setLoading] = useState(null)
@@ -14,11 +16,32 @@ export default function Import() {
   const [editionQuery, setEditionQuery] = useState({ bookId: '', title: '', author: '', isbn: '' })
   const [editionStatus, setEditionStatus] = useState(null)
   const [editionResults, setEditionResults] = useState(null)
+  const [fanartPrefs, setFanartPrefs] = useState(() => {
+    try {
+      const raw = localStorage.getItem(FANART_PREFS_KEY)
+      if (!raw) return { allowMature: false, minEdge: 700 }
+      const parsed = JSON.parse(raw)
+      return {
+        allowMature: Boolean(parsed.allowMature),
+        minEdge: Number(parsed.minEdge) || 700
+      }
+    } catch {
+      return { allowMature: false, minEdge: 700 }
+    }
+  })
 
   useEffect(() => {
     loadCoverStats()
     loadDuplicates()
   }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(FANART_PREFS_KEY, JSON.stringify(fanartPrefs))
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [fanartPrefs])
 
   const loadCoverStats = async () => {
     try {
@@ -522,6 +545,44 @@ export default function Import() {
               )}
             </div>
           )}
+        </Section>
+
+        <Section
+          title="Fan Art Preferences"
+          icon="🎨"
+          description="Controls for DeviantArt fan-art lookups used on series pages."
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 14 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, color: '#c8c4bc', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={fanartPrefs.allowMature}
+                onChange={e => setFanartPrefs(prev => ({ ...prev, allowMature: e.target.checked }))}
+              />
+              Include mature / risque DeviantArt results
+            </label>
+
+            <div>
+              <label style={labelStyle}>Quality floor (minimum long edge in pixels)</label>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <input
+                  type="range"
+                  min="300"
+                  max="1600"
+                  step="50"
+                  value={fanartPrefs.minEdge}
+                  onChange={e => setFanartPrefs(prev => ({ ...prev, minEdge: Number(e.target.value) }))}
+                  style={{ flex: 1 }}
+                />
+                <span style={{ color: '#9a9488', fontSize: 12, minWidth: 62, textAlign: 'right' }}>
+                  {fanartPrefs.minEdge}px
+                </span>
+              </div>
+              <div style={{ color: '#6a6460', fontSize: 11, marginTop: 6 }}>
+                Higher values mean fewer but sharper images.
+              </div>
+            </div>
+          </div>
         </Section>
       </SectionGroup>
 

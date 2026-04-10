@@ -3,6 +3,21 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 
 const TIERS = ['S','A','B','C','D','Unranked']
 const TIER_COLORS = { S: '#f4c542', A: '#6ea8fe', B: '#5cb85c', C: '#e67e22', D: '#e74c3c', Unranked: '#555' }
+const FANART_PREFS_KEY = 'bookshelf:fanart-prefs:v1'
+
+function readFanartPrefs() {
+  try {
+    const raw = localStorage.getItem(FANART_PREFS_KEY)
+    if (!raw) return { allowMature: false, minEdge: 700 }
+    const parsed = JSON.parse(raw)
+    return {
+      allowMature: Boolean(parsed.allowMature),
+      minEdge: Number(parsed.minEdge) || 700
+    }
+  } catch {
+    return { allowMature: false, minEdge: 700 }
+  }
+}
 
 export default function SeriesView() {
   const { id } = useParams()
@@ -13,6 +28,7 @@ export default function SeriesView() {
   const [aiLoading, setAiLoading] = useState(false)
   const [related, setRelated] = useState(null)
   const [fanart, setFanart] = useState({ loading: false, error: null, items: [], queries: [] })
+  const [fanartPrefs, setFanartPrefs] = useState(() => readFanartPrefs())
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -24,7 +40,15 @@ export default function SeriesView() {
   useEffect(() => {
     if (!series?.id) return
     loadSeriesFanart()
-  }, [series?.id])
+  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge])
+
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key === FANART_PREFS_KEY) setFanartPrefs(readFanartPrefs())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   const save = async () => {
     await fetch(`/api/series/${id}`, {
@@ -53,7 +77,13 @@ export default function SeriesView() {
   const loadSeriesFanart = async () => {
     setFanart({ loading: true, error: null, items: [], queries: [] })
     try {
-      const res = await fetch(`/api/fanart/deviantart?series_id=${encodeURIComponent(id)}&limit=10`)
+      const params = new URLSearchParams({
+        series_id: String(id),
+        limit: '10',
+        allow_mature: fanartPrefs.allowMature ? 'true' : 'false',
+        min_edge: String(fanartPrefs.minEdge)
+      })
+      const res = await fetch(`/api/fanart/deviantart?${params.toString()}`)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to fetch fan art')
       setFanart({
@@ -197,6 +227,9 @@ export default function SeriesView() {
             Searches: {fanart.queries.join(' | ')}
           </div>
         )}
+        <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
+          Filters: {fanartPrefs.allowMature ? 'Mature allowed' : 'Mature filtered'} | Min edge {fanartPrefs.minEdge}px
+        </div>
 
         {fanart.error && (
           <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{fanart.error}</div>

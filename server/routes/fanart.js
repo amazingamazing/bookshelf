@@ -11,6 +11,8 @@ router.get('/deviantart', async (req, res) => {
       limit: rawLimit
     } = req.query;
     const limit = Math.max(1, Math.min(20, Number(rawLimit) || 10));
+    const allowMature = parseBoolean(req.query.allow_mature, false);
+    const minEdge = Math.max(200, Math.min(4000, Number(req.query.min_edge) || 700));
 
     let searchText = (rawQuery || '').trim();
     const searchQueries = [];
@@ -70,9 +72,9 @@ router.get('/deviantart', async (req, res) => {
     const dedupedQueries = Array.from(new Set(searchQueries.map(q => q.trim()).filter(Boolean)));
     const merged = [];
     for (const query of dedupedQueries) {
-      const itemsForQuery = await searchDeviantArtRss(query, limit);
+      const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
       merged.push(...itemsForQuery.map(item => ({ ...item, query })));
-      if (merged.length >= limit * 3) break;
+      if (merged.length >= limit * 12) break;
     }
 
     const seen = new Set();
@@ -81,13 +83,15 @@ router.get('/deviantart', async (req, res) => {
       if (seen.has(item.link)) continue;
       seen.add(item.link);
       unique.push(item);
-      if (unique.length >= limit) break;
+      if (unique.length >= limit * 12) break;
     }
 
     const withLiveImages = [];
     for (const item of unique) {
       const ok = await urlLooksLikeImage(item.image_url);
-      if (ok) withLiveImages.push(item);
+      if (!ok) continue;
+      if (!passesQualityFloor(item, minEdge)) continue;
+      withLiveImages.push(item);
       if (withLiveImages.length >= limit) break;
     }
 
@@ -95,6 +99,8 @@ router.get('/deviantart', async (req, res) => {
       source: 'deviantart_rss',
       query: dedupedQueries.join(' || '),
       queries: dedupedQueries,
+      allow_mature: allowMature,
+      quality_floor_min_edge: minEdge,
       count: withLiveImages.length,
       items: withLiveImages
     });
@@ -103,8 +109,8 @@ router.get('/deviantart', async (req, res) => {
   }
 });
 
-async function searchDeviantArtRss(searchText, limit) {
-  const rssUrl = `https://backend.deviantart.com/rss.xml?q=${encodeURIComponent(searchText)}&type=deviation`;
+async function searchDeviantArtRss(searchText, limit, { allowMature }) {
+  const rssUrl = `https://backend.deviantart.com/rss.xml?q=${encodeURIComponent(searchText)}&type=deviation&mature_content=${allowMature ? 'true' : 'false'}&include_mature=${allowMature ? 'true' : 'false'}`;
   const feedRes = await fetch(rssUrl);
   if (!feedRes.ok) return [];
   const xml = await feedRes.text();
@@ -123,7 +129,14 @@ function parseRssItem(raw) {
   const link = getTag(raw, 'link');
   const creator = decodeHtml(getDcCreator(raw));
   const pubDate = getTag(raw, 'pubDate');
-  const imageUrl = getMediaContent(raw) || getImageFromDescription(getTag(raw, 'description')) || getMediaThumbnail(raw);
+  const mediaContent = getMediaTag(raw, 'media:content');
+  const mediaThumbnail = getMediaTag(raw, 'media:thumbnail');
+  const descImage = getImageFromDescription(getTag(raw, 'description'));
+
+  const imageUrl = mediaContent.url || descImage || mediaThumbnail.url;
+  const urlDimensions = extractDimensionsFromUrl(imageUrl);
+  const imageWidth = mediaContent.width || mediaThumbnail.width || urlDimensions.width || null;
+  const imageHeight = mediaContent.height || mediaThumbnail.height || urlDimensions.height || null;
 
   if (!title || !link || !imageUrl) return null;
   return {
@@ -131,7 +144,9 @@ function parseRssItem(raw) {
     link,
     creator: creator || null,
     published_at: pubDate || null,
-    image_url: imageUrl
+    image_url: imageUrl,
+    image_width: imageWidth,
+    image_height: imageHeight
   };
 }
 
@@ -145,14 +160,20 @@ function getDcCreator(raw) {
   return match ? stripCdata(match[1]).trim() : '';
 }
 
-function getMediaThumbnail(raw) {
-  const match = raw.match(/<media:thumbnail[^>]*url="([^"]+)"/i);
-  return match ? match[1] : '';
-}
-
-function getMediaContent(raw) {
-  const match = raw.match(/<media:content[^>]*url="([^"]+)"/i);
-  return match ? match[1] : '';
+function getMediaTag(raw, tagName) {
+  const match = raw.match(new RegExp(`<${tagName}([^>]*)\\/?>`, 'i'));
+  if (!match) return { url: '', width: null, height: null };
+  const attrs = match[1] || '';
+  const url = (attrs.match(/url="([^"]+)"/i) || [])[1] || '';
+  const widthRaw = (attrs.match(/width="([^"]+)"/i) || [])[1];
+  const heightRaw = (attrs.match(/height="([^"]+)"/i) || [])[1];
+  const width = widthRaw ? Number(widthRaw) : null;
+  const height = heightRaw ? Number(heightRaw) : null;
+  return {
+    url,
+    width: Number.isFinite(width) ? width : null,
+    height: Number.isFinite(height) ? height : null
+  };
 }
 
 function getImageFromDescription(description) {
@@ -186,6 +207,32 @@ async function urlLooksLikeImage(url) {
   } catch {
     return false;
   }
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value == null) return fallback;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function extractDimensionsFromUrl(url) {
+  const str = String(url || '');
+  const match = str.match(/(?:w_|width=)(\d+).*(?:h_|height=)(\d+)/i) || str.match(/(?:h_|height=)(\d+).*(?:w_|width=)(\d+)/i);
+  if (!match) return { width: null, height: null };
+  const a = Number(match[1]);
+  const b = Number(match[2]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return { width: null, height: null };
+  // If the regex hit h_ first branch, this still works because we only need edge sizes.
+  return { width: a, height: b };
+}
+
+function passesQualityFloor(item, minEdge) {
+  const width = Number(item.image_width);
+  const height = Number(item.image_height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+  return Math.max(width, height) >= minEdge;
 }
 
 module.exports = router;
