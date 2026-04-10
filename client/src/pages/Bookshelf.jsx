@@ -30,7 +30,66 @@ export default function Bookshelf() {
     return map[status] || status
   }
 
-  const filteredSeries = series.filter(s => {
+  const normalizeKeyPart = (value) => (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+  const seriesById = series.reduce((acc, s) => {
+    acc[s.id] = s
+    return acc
+  }, {})
+
+  const groupedSeries = (() => {
+    const groups = {}
+    for (const book of books) {
+      const linkedSeries = book.series_id ? seriesById[book.series_id] : null
+      const seriesName = (book.series_name || linkedSeries?.name || '').trim()
+      const authorName = (book.author_name || linkedSeries?.author_name || '').trim()
+      const key = seriesName
+        ? `${normalizeKeyPart(authorName)}::${normalizeKeyPart(seriesName)}`
+        : `book-${book.id}`
+
+      if (!groups[key]) {
+        groups[key] = {
+          key,
+          books: [],
+          name: seriesName || book.title,
+          author_name: authorName || 'Unknown',
+          tier: linkedSeries?.tier || 'Unranked',
+          status: linkedSeries?.status || normalizeStatus(book.status) || 'Want to Read',
+          cover_url: linkedSeries?.cover_url || book.cover_url || null,
+          openSeriesId: linkedSeries?.id || null,
+          sourceSeriesIds: linkedSeries?.id ? [linkedSeries.id] : []
+        }
+      } else if (linkedSeries?.id && !groups[key].sourceSeriesIds.includes(linkedSeries.id)) {
+        groups[key].sourceSeriesIds.push(linkedSeries.id)
+      }
+
+      groups[key].books.push(book)
+      if (!groups[key].cover_url && book.cover_url) groups[key].cover_url = book.cover_url
+      if (!groups[key].openSeriesId && linkedSeries?.id) groups[key].openSeriesId = linkedSeries.id
+      if (linkedSeries?.tier && linkedSeries.tier !== 'Unranked') groups[key].tier = linkedSeries.tier
+    }
+
+    return Object.values(groups).map((g, idx) => {
+      const booksRead = g.books.filter(b => normalizeStatus(b.status) === 'Read').length
+      return {
+        id: g.openSeriesId || `group-${idx}-${g.key}`,
+        name: g.name,
+        author_name: g.author_name,
+        tier: g.tier || 'Unranked',
+        status: g.status || 'Want to Read',
+        cover_url: g.cover_url,
+        book_count: g.books.length,
+        books_read: booksRead,
+        openSeriesId: g.openSeriesId,
+        books: g.books
+      }
+    }).sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier.localeCompare(b.tier)
+      return a.name.localeCompare(b.name)
+    })
+  })()
+
+  const filteredSeries = groupedSeries.filter(s => {
     if (filter.tier !== 'all' && s.tier !== filter.tier) return false
     if (filter.status !== 'all' && normalizeStatus(s.status) !== normalizeStatus(filter.status)) return false
     if (filter.search && !s.name.toLowerCase().includes(filter.search.toLowerCase()) &&
@@ -52,13 +111,6 @@ export default function Bookshelf() {
     }
     return true
   })
-
-  const booksBySeries = books.reduce((acc, b) => {
-    if (!b.series_id) return acc
-    if (!acc[b.series_id]) acc[b.series_id] = []
-    acc[b.series_id].push(b)
-    return acc
-  }, {})
 
   const coverSize = Math.round(120 * zoom)
 
@@ -99,10 +151,10 @@ export default function Bookshelf() {
 
       {/* Stats bar */}
       <div style={{ display: 'flex', gap: 24, marginBottom: 24, fontSize: 13, color: '#9a9488' }}>
-        <span>{series.length} series</span>
+        <span>{groupedSeries.length} series</span>
         <span>{books.length} books</span>
         <span>{books.filter(b => b.status === 'Read').length} read</span>
-        <span>{series.filter(s => s.tier && s.tier !== 'Unranked').length} ranked</span>
+        <span>{groupedSeries.filter(s => s.tier && s.tier !== 'Unranked').length} ranked</span>
       </div>
 
       {/* Cover grid */}
@@ -125,12 +177,12 @@ export default function Bookshelf() {
             <SeriesStackCard
               key={s.id}
               series={s}
-              books={booksBySeries[s.id] || []}
+              books={s.books || []}
               size={coverSize}
               expanded={expandedSeriesId === s.id}
               onExpand={() => setExpandedSeriesId(s.id)}
               onCollapse={() => setExpandedSeriesId(null)}
-              onOpen={() => navigate(`/series/${s.id}`)}
+              onOpen={() => s.openSeriesId && navigate(`/series/${s.openSeriesId}`)}
             />
           ))}
         </div>
