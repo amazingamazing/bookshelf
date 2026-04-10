@@ -416,6 +416,10 @@ export default function Bookshelf() {
         <FanoutOverlay
           series={expandedSeries}
           size={coverSize}
+          onOpenBook={(book) => {
+            const seriesId = book.series_id || expandedSeries.openSeriesId
+            if (seriesId) navigate(`/series/${seriesId}`)
+          }}
           onClose={() => setExpandedSeriesId(null)}
         />
       )}
@@ -618,7 +622,7 @@ function SeriesStackCard({ series, size, expanded, onToggle, dimmed = false }) {
   )
 }
 
-function FanoutOverlay({ series, size, onClose }) {
+function FanoutOverlay({ series, size, onClose, onOpenBook }) {
   const [hoveredBookId, setHoveredBookId] = useState(null)
   const books = [...(series.books || [])].sort((a, b) => (a.series_order || 9999) - (b.series_order || 9999))
   const count = books.length
@@ -649,8 +653,9 @@ function FanoutOverlay({ series, size, onClose }) {
   const hoverTargetWidth = Math.round(size * 1.5)
   const hoverScale = fanWidth > 0 ? hoverTargetWidth / fanWidth : 1
   const usedWidth = fanWidth + Math.max(0, count - 1) * step
-  const centerOffset = Math.max(0, Math.round((innerWidth - usedWidth) / 2))
   const maxRotate = Math.max(8, 16 - Math.floor(density * 8))
+  const fanAreaHeight = Math.max(130, fanHeight + Math.round(size * 0.55))
+  const panelMinHeight = Math.max(220, fanAreaHeight + 54)
 
   return (
     <div
@@ -668,18 +673,15 @@ function FanoutOverlay({ series, size, onClose }) {
           top: '52%',
           transform: 'translate(-50%, -50%)',
           width: panelWidth,
-          minHeight: Math.max(260, fanHeight + Math.round(size * 1.1)),
+          minHeight: panelMinHeight,
           background: 'rgba(15,14,12,0.97)',
           border: '1px solid #2a2822',
           borderRadius: 12,
           boxShadow: '0 18px 48px rgba(0,0,0,0.55)',
-          padding: '16px 18px 20px',
+          padding: '14px 18px 12px',
           pointerEvents: 'auto'
         }}
-        onClick={(e) => {
-          e.stopPropagation()
-          onClose()
-        }}
+        onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div style={{ color: '#e8e4dc', fontSize: 14, fontWeight: 600 }}>{series.name}</div>
@@ -689,14 +691,19 @@ function FanoutOverlay({ series, size, onClose }) {
         </div>
         <div style={{
           position: 'relative',
-          height: Math.max(170, fanHeight + Math.round(size * 0.9)),
+          height: fanAreaHeight,
           overflow: 'visible'
         }}>
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: Math.max(fanWidth, usedWidth),
+            height: '100%'
+          }}>
           {books.map((book, idx) => {
             const spread = count <= 1 ? 0.5 : idx / (count - 1)
-            const left = count <= 1
-              ? Math.round((innerWidth - fanWidth) / 2)
-              : Math.round(centerOffset + idx * step)
+            const left = count <= 1 ? 0 : Math.round(idx * step)
             const rotate = -maxRotate + spread * (maxRotate * 2)
             const isHovered = hoveredBookId === book.id
             return (
@@ -705,6 +712,7 @@ function FanoutOverlay({ series, size, onClose }) {
                 title={book.title}
                 onClick={(e) => {
                   e.stopPropagation()
+                  onOpenBook?.(book)
                   onClose()
                 }}
                 onMouseEnter={() => setHoveredBookId(book.id)}
@@ -735,6 +743,7 @@ function FanoutOverlay({ series, size, onClose }) {
               </div>
             )
           })}
+          </div>
         </div>
       </div>
     </div>
