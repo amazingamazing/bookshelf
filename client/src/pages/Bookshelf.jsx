@@ -3,15 +3,28 @@ import { useNavigate } from 'react-router-dom'
 
 const TIER_COLORS = { S: '#f4c542', A: '#6ea8fe', B: '#5cb85c', C: '#e67e22', D: '#e74c3c', Unranked: '#555' }
 const STATUS_COLORS = { Read: '#5cb85c', 'Currently Reading': '#6ea8fe', 'Want to Read': '#888', Dropped: '#e74c3c' }
+const BOOKSHELF_PREFS_KEY = 'bookshelf:view-prefs:v1'
 
 export default function Bookshelf() {
+  const [savedPrefs] = useState(() => {
+    try {
+      const raw = localStorage.getItem(BOOKSHELF_PREFS_KEY)
+      return raw ? JSON.parse(raw) : {}
+    } catch {
+      return {}
+    }
+  })
   const [series, setSeries] = useState([])
   const [books, setBooks] = useState([])
-  const [view, setView] = useState('books') // 'series' | 'books'
-  const [zoom, setZoom] = useState(1)
-  const [filter, setFilter] = useState({ tier: 'all', status: 'all', search: '' })
-  const [sortBy, setSortBy] = useState('title')
-  const [sortDir, setSortDir] = useState('asc')
+  const [view, setView] = useState(savedPrefs.view || 'books') // 'series' | 'books'
+  const [zoom, setZoom] = useState(typeof savedPrefs.zoom === 'number' ? savedPrefs.zoom : 1)
+  const [filter, setFilter] = useState({
+    tier: savedPrefs.filter?.tier || 'all',
+    status: savedPrefs.filter?.status || 'all',
+    search: savedPrefs.filter?.search || ''
+  })
+  const [sortBy, setSortBy] = useState(savedPrefs.sortBy || 'title')
+  const [sortDir, setSortDir] = useState(savedPrefs.sortDir || 'asc')
   const [expandedSeriesId, setExpandedSeriesId] = useState(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -272,6 +285,20 @@ export default function Bookshelf() {
     const available = new Set(sortOptions.map(o => o.value))
     if (!available.has(sortBy)) setSortBy('title')
   }, [sortBy, hasPublicationDateData, hasReadDateData])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(BOOKSHELF_PREFS_KEY, JSON.stringify({
+        view,
+        zoom,
+        filter,
+        sortBy,
+        sortDir
+      }))
+    } catch {
+      // Ignore storage errors (private mode, quota, etc.)
+    }
+  }, [view, zoom, filter, sortBy, sortDir])
 
   const coverSize = Math.round(120 * zoom)
 
