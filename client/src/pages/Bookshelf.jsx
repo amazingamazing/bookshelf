@@ -248,8 +248,9 @@ export default function Bookshelf() {
       const aMissing = av == null || av === ''
       const bMissing = bv == null || bv === ''
       if (aMissing && bMissing) cmp = 0
-      else if (aMissing) cmp = 1
-      else if (bMissing) cmp = -1
+      // Missing values should always go to the end, regardless of sort direction.
+      else if (aMissing) return 1
+      else if (bMissing) return -1
 
       else if (typeof av === 'number' || typeof bv === 'number' || sortBy.includes('date') || sortBy === 'series_length') {
         const an = av == null ? Number.NEGATIVE_INFINITY : Number(av)
@@ -264,8 +265,20 @@ export default function Bookshelf() {
     })
   }
 
-  const sortedBooks = sortItems(booksWithSortFields)
-  const sortedSeries = sortItems(filteredSeries)
+  const sortedBooks = sortItems(booksWithSortFields).map(item => ({
+    ...item,
+    _missingCurrentSort: (() => {
+      const value = getSortValue(item)
+      return value == null || value === ''
+    })()
+  }))
+  const sortedSeries = sortItems(filteredSeries).map(item => ({
+    ...item,
+    _missingCurrentSort: (() => {
+      const value = getSortValue(item)
+      return value == null || value === ''
+    })()
+  }))
   const expandedSeries = sortedSeries.find(s => s.id === expandedSeriesId) || null
 
   useEffect(() => {
@@ -374,13 +387,20 @@ export default function Bookshelf() {
           display: 'flex', flexWrap: 'wrap', gap: zoom < 0.75 ? 6 : 12
         }}>
           {view === 'books' ? sortedBooks.map(b => (
-            <BookCard key={b.id} book={b} size={coverSize} onClick={() => b.series_id && navigate(`/series/${b.series_id}`)} />
+            <BookCard
+              key={b.id}
+              book={b}
+              size={coverSize}
+              dimmed={sortBy.includes('date') && b._missingCurrentSort}
+              onClick={() => b.series_id && navigate(`/series/${b.series_id}`)}
+            />
           )) : sortedSeries.map(s => (
             <SeriesStackCard
               key={s.id}
               series={s}
               size={coverSize}
               expanded={expandedSeriesId === s.id}
+              dimmed={sortBy.includes('date') && s._missingCurrentSort}
               onToggle={(e) => {
                 e.stopPropagation()
                 setExpandedSeriesId(prev => prev === s.id ? null : s.id)
@@ -441,14 +461,16 @@ export default function Bookshelf() {
   )
 }
 
-function BookCard({ book, size, onClick }) {
+function BookCard({ book, size, onClick, dimmed = false }) {
   const [imgErr, setImgErr] = useState(false)
 
   return (
     <div onClick={onClick} title={`${book.title} by ${book.author_name || 'Unknown'}`}
       style={{
         width: size, cursor: book.series_id ? 'pointer' : 'default', position: 'relative',
-        transition: 'transform 0.15s', borderRadius: 6, overflow: 'hidden'
+        transition: 'transform 0.15s', borderRadius: 6, overflow: 'hidden',
+        opacity: dimmed ? 0.4 : 1,
+        filter: dimmed ? 'grayscale(60%)' : 'none'
       }}
       onMouseEnter={e => e.currentTarget.style.transform = book.series_id ? 'translateY(-4px) scale(1.02)' : 'none'}
       onMouseLeave={e => e.currentTarget.style.transform = 'none'}
@@ -484,7 +506,7 @@ function BookCard({ book, size, onClick }) {
   )
 }
 
-function SeriesStackCard({ series, size, expanded, onToggle }) {
+function SeriesStackCard({ series, size, expanded, onToggle, dimmed = false }) {
   const [imgErr, setImgErr] = useState(false)
   const tierColor = TIER_COLORS[series.tier] || '#555'
   const readCount = Number(series.books_read || 0)
@@ -498,7 +520,9 @@ function SeriesStackCard({ series, size, expanded, onToggle }) {
       style={{
         width: size, cursor: 'pointer', position: 'relative',
         transition: 'transform 0.15s', borderRadius: 6, overflow: 'visible',
-        boxShadow: expanded ? '0 0 0 2px #6ea8fe55' : 'none'
+        boxShadow: expanded ? '0 0 0 2px #6ea8fe55' : 'none',
+        opacity: dimmed ? 0.4 : 1,
+        filter: dimmed ? 'grayscale(60%)' : 'none'
       }}
       onClick={onToggle}
       onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-4px) scale(1.02)'}
