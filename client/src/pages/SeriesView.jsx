@@ -139,9 +139,25 @@ export default function SeriesView() {
               display: 'flex', alignItems: 'center', gap: 12,
               background: '#1a1814', borderRadius: 8, padding: '10px 14px'
             }}>
-              <span style={{ color: '#555', fontSize: 13, minWidth: 24 }}>#{book.series_order || '?'}</span>
+              <span style={{ color: '#555', fontSize: 13, minWidth: 24 }}>#{formatSeriesOrder(book.series_order)}</span>
               <div style={{ flex: 1 }}>
-                <div style={{ color: '#e8e4dc', fontSize: 14 }}>{book.title}</div>
+                <button
+                  type="button"
+                  onClick={() => book.cover_url && window.open(book.cover_url, '_blank', 'noopener,noreferrer')}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: book.cover_url ? '#6ea8fe' : '#e8e4dc',
+                    fontSize: 14,
+                    cursor: book.cover_url ? 'pointer' : 'default',
+                    padding: 0,
+                    textAlign: 'left'
+                  }}
+                  title={book.cover_url ? 'Open book cover' : 'No cover available'}
+                  disabled={!book.cover_url}
+                >
+                  {book.title}
+                </button>
               </div>
               <StatusBadge status={book.status} />
               {book.rating && <span style={{ color: '#f4c542', fontSize: 13 }}>{book.rating}★</span>}
@@ -178,6 +194,13 @@ export default function SeriesView() {
       </div>
     </div>
   )
+}
+
+function formatSeriesOrder(value) {
+  if (value == null || value === '') return '?'
+  const n = Number(value)
+  if (!Number.isFinite(n)) return String(value)
+  return Number.isInteger(n) ? String(n) : String(n)
 }
 
 function Chip({ label, color = '#2a2822', text = '#9a9488' }) {
