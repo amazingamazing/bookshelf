@@ -145,6 +145,7 @@ router.post('/audible', upload.single('file'), async (req, res) => {
 
           const authorRaw = (row['Author'] || row['author'] || row['Authors'] || '')?.trim();
           const asin = (row['ASIN'] || row['asin'] || '')?.trim();
+          const coverUrl = (row['Cover'] || row['cover'] || row['Cover URL'] || row['cover_url'] || row['Image'] || '')?.trim() || null;
 
           const authorId = await findOrCreateAuthor(client, authorRaw);
 
@@ -175,13 +176,16 @@ router.post('/audible', upload.single('file'), async (req, res) => {
           );
 
           if (existing.rows[0]) {
-            await client.query('UPDATE books SET audible_asin=$1 WHERE id=$2', [asin, existing.rows[0].id]);
+            await client.query(
+              'UPDATE books SET audible_asin=$1, cover_url=COALESCE(cover_url,$2) WHERE id=$3',
+              [asin, coverUrl, existing.rows[0].id]
+            );
             results.skipped++;
           } else {
             await client.query(`
-              INSERT INTO books (title, author_id, series_id, series_order, audible_asin, status, source)
-              VALUES ($1,$2,$3,$4,$5,'Read','audible')
-            `, [cleanTitle, authorId, seriesId, seriesOrder, asin]);
+              INSERT INTO books (title, author_id, series_id, series_order, audible_asin, cover_url, status, source)
+              VALUES ($1,$2,$3,$4,$5,$6,'Read','audible')
+            `, [cleanTitle, authorId, seriesId, seriesOrder, asin, coverUrl]);
             results.imported++;
           }
         } catch (rowErr) {

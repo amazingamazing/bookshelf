@@ -70,7 +70,9 @@ router.post('/fetch-missing', async (req, res) => {
         // Skip failed books
       }
     }
-    res.json({ updated, remaining: rows.length - updated });
+    const { rows: countRows } = await pool.query('SELECT COUNT(*) FROM books WHERE cover_url IS NULL');
+    const remaining = parseInt(countRows[0].count);
+    res.json({ updated, remaining });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
