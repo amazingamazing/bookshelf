@@ -30,6 +30,27 @@ export default function Bookshelf() {
     return map[status] || status
   }
 
+  const inferSeriesFromTitle = (title) => {
+    if (!title) return null
+    const parenMatch = title.match(/\(([^,#]+),\s*#?([\d.]+)\)\s*$/)
+    if (parenMatch) {
+      return {
+        name: parenMatch[1].trim(),
+        order: parenMatch[2] ? parseFloat(parenMatch[2]) : null,
+        source: 'paren'
+      }
+    }
+    const colonMatch = title.match(/:\s*([^,]+),\s*Book\s+([\d.]+)\s*$/i)
+    if (colonMatch) {
+      return {
+        name: colonMatch[1].trim(),
+        order: colonMatch[2] ? parseFloat(colonMatch[2]) : null,
+        source: 'colon'
+      }
+    }
+    return null
+  }
+
   const normalizeKeyPart = (value) => (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
   const seriesById = series.reduce((acc, s) => {
@@ -39,10 +60,13 @@ export default function Bookshelf() {
 
   const groupedSeries = (() => {
     const groups = {}
+    let inferredSeriesCount = 0
     for (const book of books) {
       const linkedSeries = book.series_id ? seriesById[book.series_id] : null
-      const seriesName = (book.series_name || linkedSeries?.name || '').trim()
+      const inferred = inferSeriesFromTitle(book.title)
+      const seriesName = (book.series_name || linkedSeries?.name || inferred?.name || '').trim()
       const authorName = (book.author_name || linkedSeries?.author_name || '').trim()
+      if (!book.series_name && !linkedSeries?.name && inferred?.name) inferredSeriesCount++
       const key = seriesName
         ? `${normalizeKeyPart(authorName)}::${normalizeKeyPart(seriesName)}`
         : `book-${book.id}`
@@ -69,7 +93,7 @@ export default function Bookshelf() {
       if (linkedSeries?.tier && linkedSeries.tier !== 'Unranked') groups[key].tier = linkedSeries.tier
     }
 
-    return Object.values(groups).map((g, idx) => {
+    const builtGroups = Object.values(groups).map((g, idx) => {
       const booksRead = g.books.filter(b => normalizeStatus(b.status) === 'Read').length
       return {
         id: g.openSeriesId || `group-${idx}-${g.key}`,
@@ -87,7 +111,25 @@ export default function Bookshelf() {
       if (a.tier !== b.tier) return a.tier.localeCompare(b.tier)
       return a.name.localeCompare(b.name)
     })
+    builtGroups._debugInferredSeriesCount = inferredSeriesCount
+    return builtGroups
   })()
+
+  const debugStats = {
+    totalBooks: books.length,
+    booksWithSeriesId: books.filter(b => !!b.series_id).length,
+    booksWithSeriesNameFromApi: books.filter(b => !!(b.series_name || '').trim()).length,
+    booksWithInferableSeriesInTitle: books.filter(b => !!inferSeriesFromTitle(b.title)?.name).length,
+    inferredSeriesUsedForGrouping: groupedSeries._debugInferredSeriesCount || 0,
+    groupedSeriesCount: groupedSeries.length,
+    groupsWithMultipleBooks: groupedSeries.filter(g => (g.book_count || 0) > 1).length,
+    groupsWithMultipleReadBooks: groupedSeries.filter(g => (g.books_read || 0) > 1).length,
+    groupsThatCanOpenSeriesPage: groupedSeries.filter(g => !!g.openSeriesId).length
+  }
+  const debugTopGroups = [...groupedSeries]
+    .filter(g => (g.book_count || 0) > 1)
+    .sort((a, b) => (b.book_count || 0) - (a.book_count || 0))
+    .slice(0, 12)
 
   const filteredSeries = groupedSeries.filter(s => {
     if (filter.tier !== 'all' && s.tier !== filter.tier) return false
@@ -187,6 +229,46 @@ export default function Bookshelf() {
           ))}
         </div>
       )}
+
+      <div style={{ marginTop: 28, borderTop: '1px solid #2a2822', paddingTop: 16 }}>
+        <details open style={{ background: '#1a1814', border: '1px solid #2a2822', borderRadius: 8, padding: '10px 12px' }}>
+          <summary style={{ cursor: 'pointer', color: '#e8e4dc', fontSize: 13, fontWeight: 600 }}>
+            Debug: Series grouping diagnostics
+          </summary>
+          <div style={{ marginTop: 10, color: '#9a9488', fontSize: 12, lineHeight: 1.5 }}>
+            <div>Total books: <span style={{ color: '#e8e4dc' }}>{debugStats.totalBooks}</span></div>
+            <div>Books with `series_id`: <span style={{ color: '#e8e4dc' }}>{debugStats.booksWithSeriesId}</span></div>
+            <div>Books with API `series_name`: <span style={{ color: '#e8e4dc' }}>{debugStats.booksWithSeriesNameFromApi}</span></div>
+            <div>Books with inferable series in title: <span style={{ color: '#e8e4dc' }}>{debugStats.booksWithInferableSeriesInTitle}</span></div>
+            <div>Inferred series used for grouping: <span style={{ color: '#e8e4dc' }}>{debugStats.inferredSeriesUsedForGrouping}</span></div>
+            <div>Total grouped series: <span style={{ color: '#e8e4dc' }}>{debugStats.groupedSeriesCount}</span></div>
+            <div>Groups with 2+ books: <span style={{ color: '#e8e4dc' }}>{debugStats.groupsWithMultipleBooks}</span></div>
+            <div>Groups with 2+ read books (stackable): <span style={{ color: '#e8e4dc' }}>{debugStats.groupsWithMultipleReadBooks}</span></div>
+            <div>Groups with linked series page: <span style={{ color: '#e8e4dc' }}>{debugStats.groupsThatCanOpenSeriesPage}</span></div>
+          </div>
+
+          <details style={{ marginTop: 10 }}>
+            <summary style={{ cursor: 'pointer', color: '#c8c4bc', fontSize: 12 }}>
+              Top multi-book groups
+            </summary>
+            <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+              {debugTopGroups.length === 0 && (
+                <div style={{ fontSize: 12, color: '#6a6460' }}>No groups with more than one book yet.</div>
+              )}
+              {debugTopGroups.map(g => (
+                <div key={g.id} style={{ background: '#0f0e0c', border: '1px solid #2a2822', borderRadius: 6, padding: '6px 8px' }}>
+                  <div style={{ color: '#e8e4dc', fontSize: 12 }}>
+                    {g.name} — {g.author_name}
+                  </div>
+                  <div style={{ color: '#9a9488', fontSize: 11 }}>
+                    {g.book_count} books, {g.books_read} read, {g.openSeriesId ? `series page #${g.openSeriesId}` : 'no linked series page'}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        </details>
+      </div>
     </div>
   )
 }
