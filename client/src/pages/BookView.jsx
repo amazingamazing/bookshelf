@@ -5,15 +5,70 @@ export default function BookView() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [book, setBook] = useState(null)
+  const [editionState, setEditionState] = useState({ loading: false, error: null, editions: [], workKey: null })
+  const [selectingCover, setSelectingCover] = useState(null)
+
+  const loadBook = async () => {
+    const res = await fetch(`/api/books/${id}`)
+    const data = await res.json()
+    setBook(data)
+  }
 
   useEffect(() => {
-    fetch(`/api/books/${id}`).then(r => r.json()).then(setBook)
+    loadBook()
   }, [id])
 
   if (!book) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading...</div>
 
   const hasSeries = Boolean(book.series_id)
   const seriesPosition = formatSeriesOrder(book.series_order)
+  const canLookupEditions = Boolean(book.title || book.isbn)
+
+  const findEditionCovers = async () => {
+    setEditionState({ loading: true, error: null, editions: [], workKey: null })
+    try {
+      const res = await fetch(`/api/covers/editions?book_id=${encodeURIComponent(id)}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to load edition covers')
+      setEditionState({
+        loading: false,
+        error: null,
+        editions: data.editions || [],
+        workKey: data.work_key || null
+      })
+    } catch (err) {
+      setEditionState({ loading: false, error: err.message, editions: [], workKey: null })
+    }
+  }
+
+  const applyCover = async (coverUrl, isbn, edition) => {
+    setSelectingCover(coverUrl)
+    setEditionState(prev => ({ ...prev, error: null }))
+    try {
+      const res = await fetch('/api/covers/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          book_id: Number(id),
+          cover_url: coverUrl,
+          isbn: isbn || null,
+          source: 'open_library_edition_pick',
+          metadata: {
+            edition_key: edition?.edition_key || null,
+            edition_title: edition?.title || null,
+            publish_date: edition?.publish_date || null
+          }
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to apply cover')
+      await loadBook()
+    } catch (err) {
+      setEditionState(prev => ({ ...prev, error: err.message }))
+    } finally {
+      setSelectingCover(null)
+    }
+  }
 
   return (
     <div style={{ maxWidth: 920, margin: '0 auto', padding: 24 }}>
@@ -63,6 +118,72 @@ export default function BookView() {
             {book.source && <InfoRow label="Source" value={book.source} />}
           </div>
         </div>
+      </div>
+
+      <div style={sectionWrap}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 18, color: '#e8e4dc', marginBottom: 4 }}>Cover Picker</h2>
+            <div style={{ color: '#9a9488', fontSize: 13 }}>
+              Browse edition variants for this book and choose your preferred cover art.
+            </div>
+          </div>
+          <button
+            onClick={findEditionCovers}
+            disabled={!canLookupEditions || editionState.loading}
+            style={{ ...actionBtn, opacity: !canLookupEditions || editionState.loading ? 0.6 : 1 }}
+          >
+            {editionState.loading ? 'Finding editions...' : 'Find Edition Covers'}
+          </button>
+        </div>
+
+        {editionState.workKey && (
+          <div style={{ marginTop: 10, color: '#6a6460', fontSize: 12 }}>
+            Source work: {editionState.workKey}
+          </div>
+        )}
+
+        {editionState.error && (
+          <div style={{ marginTop: 12, color: '#e74c3c', fontSize: 13 }}>{editionState.error}</div>
+        )}
+
+        {!editionState.loading && !editionState.error && editionState.editions.length === 0 && (
+          <div style={{ marginTop: 12, color: '#9a9488', fontSize: 13 }}>
+            Click "Find Edition Covers" to load cover options.
+          </div>
+        )}
+
+        {editionState.editions.length > 0 && (
+          <div style={{ marginTop: 14, display: 'grid', gap: 12, maxHeight: 520, overflowY: 'auto', paddingRight: 4 }}>
+            {editionState.editions.map((edition, idx) => (
+              <div key={edition.edition_key || `${edition.title}-${idx}`} style={editionCard}>
+                <div style={{ color: '#e8e4dc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                  {edition.title || 'Untitled edition'}
+                </div>
+                <div style={{ color: '#9a9488', fontSize: 11, marginBottom: 10 }}>
+                  {edition.publish_date || 'Unknown date'} | ISBNs: {(edition.isbns || []).join(', ') || 'none listed'}
+                </div>
+
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {(edition.cover_urls || []).map(coverUrl => (
+                    <div key={coverUrl} style={{ width: 108 }}>
+                      <div style={candidateCoverWrap}>
+                        <img src={coverUrl} alt={edition.title || 'Edition cover'} style={coverImg} />
+                      </div>
+                      <button
+                        onClick={() => applyCover(coverUrl, edition.isbns?.[0] || null, edition)}
+                        disabled={selectingCover === coverUrl}
+                        style={{ ...actionBtn, width: '100%', marginTop: 6, padding: '6px 8px', fontSize: 11 }}
+                      >
+                        {selectingCover === coverUrl ? 'Applying...' : 'Use This Cover'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -114,3 +235,36 @@ const coverWrap = {
 }
 
 const coverImg = { width: '100%', height: '100%', objectFit: 'cover' }
+
+const sectionWrap = {
+  marginTop: 28,
+  background: '#1a1814',
+  border: '1px solid #2a2822',
+  borderRadius: 12,
+  padding: 16
+}
+
+const editionCard = {
+  background: '#0f0e0c',
+  border: '1px solid #2a2822',
+  borderRadius: 8,
+  padding: 10
+}
+
+const candidateCoverWrap = {
+  width: 108,
+  height: 162,
+  borderRadius: 6,
+  overflow: 'hidden',
+  background: '#2a2822'
+}
+
+const actionBtn = {
+  background: '#6ea8fe22',
+  border: '1px solid #6ea8fe44',
+  borderRadius: 6,
+  color: '#6ea8fe',
+  padding: '8px 12px',
+  fontSize: 12,
+  cursor: 'pointer'
+}
