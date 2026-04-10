@@ -70,6 +70,17 @@ async function initDb() {
         created_at TIMESTAMP DEFAULT NOW(),
         PRIMARY KEY (series_id, genre_id)
       );
+
+      CREATE TABLE IF NOT EXISTS book_cover_candidates (
+        id SERIAL PRIMARY KEY,
+        book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        isbn TEXT,
+        cover_url TEXT NOT NULL,
+        source TEXT NOT NULL,
+        metadata JSONB,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (book_id, source, cover_url)
+      );
     `);
     console.log('Database initialized');
   } finally {

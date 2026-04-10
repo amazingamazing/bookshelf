@@ -11,6 +11,9 @@ export default function Import() {
   const [dupeStatus, setDupeStatus] = useState(null)
   const [dupeChoiceByGroup, setDupeChoiceByGroup] = useState({})
   const [seriesRepairStatus, setSeriesRepairStatus] = useState(null)
+  const [editionQuery, setEditionQuery] = useState({ bookId: '', title: '', author: '', isbn: '' })
+  const [editionStatus, setEditionStatus] = useState(null)
+  const [editionResults, setEditionResults] = useState(null)
 
   useEffect(() => {
     loadCoverStats()
@@ -121,6 +124,66 @@ export default function Import() {
       await loadCoverStats()
     } catch (err) {
       setCoverStatus({ state: 'error', message: err.message })
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const handleFindEditions = async () => {
+    const params = new URLSearchParams()
+    if (editionQuery.bookId.trim()) params.set('book_id', editionQuery.bookId.trim())
+    if (editionQuery.title.trim()) params.set('title', editionQuery.title.trim())
+    if (editionQuery.author.trim()) params.set('author', editionQuery.author.trim())
+    if (editionQuery.isbn.trim()) params.set('isbn', editionQuery.isbn.trim())
+
+    if (![...params.keys()].length) {
+      setEditionStatus({ state: 'error', message: 'Enter a book ID, title, or ISBN first.' })
+      return
+    }
+
+    setLoading('editions')
+    setEditionStatus({ state: 'loading' })
+    setEditionResults(null)
+
+    try {
+      const res = await fetch(`/api/covers/editions?${params.toString()}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to load editions')
+      setEditionResults(data)
+      setEditionStatus({ state: 'done' })
+    } catch (err) {
+      setEditionStatus({ state: 'error', message: err.message })
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const handleSelectEditionCover = async (coverUrl, isbn) => {
+    const bookId = editionQuery.bookId.trim()
+    if (!bookId) {
+      setEditionStatus({ state: 'error', message: 'Enter a Book ID to apply a selected cover.' })
+      return
+    }
+
+    setLoading(`edition-select-${coverUrl}`)
+    setEditionStatus({ state: 'loading' })
+    try {
+      const res = await fetch('/api/covers/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          book_id: Number(bookId),
+          cover_url: coverUrl,
+          isbn: isbn || null,
+          source: 'open_library_edition_pick'
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to apply selected cover')
+      setEditionStatus({ state: 'done', message: 'Selected cover applied to book.' })
+      await loadCoverStats()
+    } catch (err) {
+      setEditionStatus({ state: 'error', message: err.message })
     } finally {
       setLoading(null)
     }
@@ -300,7 +363,7 @@ export default function Import() {
             </button>
             {coverStatus && coverStatus.state === 'loading' && (
               <div style={{ fontSize: 13, color: '#9a9488', padding: '8px 0' }}>
-                Searching Open Library for up to 50 books...
+                Running cover waterfall (Google Books -> Open Library -> LibraryThing -> Internet Archive)...
               </div>
             )}
             {coverStatus && coverStatus.state === 'error' && (
@@ -316,7 +379,7 @@ export default function Import() {
                 {coverStatus.notFound?.length > 0 && (
                   <details style={{ background: '#1a1814' }}>
                     <summary style={{ padding: '8px 12px', cursor: 'pointer', color: '#e67e22', userSelect: 'none' }}>
-                      ⚠ {coverStatus.notFound.length} book{coverStatus.notFound.length !== 1 ? 's' : ''} not found on Open Library
+                      ⚠ {coverStatus.notFound.length} book{coverStatus.notFound.length !== 1 ? 's' : ''} not found in waterfall sources
                     </summary>
                     <div style={{ padding: '4px 12px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
                       {coverStatus.notFound.map((b, i) => (
@@ -347,6 +410,118 @@ export default function Import() {
               </div>
             )}
           </div>
+        </Section>
+
+        <Section
+          title="Edition Browser"
+          icon="🧭"
+          description="Find edition variants via Open Library Works, browse available covers + ISBNs, and apply your preferred art to a book."
+        >
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={labelStyle}>Book ID (optional, required to apply)</label>
+              <input
+                value={editionQuery.bookId}
+                onChange={e => setEditionQuery(prev => ({ ...prev, bookId: e.target.value }))}
+                style={inputStyle}
+                placeholder="e.g. 42"
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>ISBN (optional)</label>
+              <input
+                value={editionQuery.isbn}
+                onChange={e => setEditionQuery(prev => ({ ...prev, isbn: e.target.value }))}
+                style={inputStyle}
+                placeholder="9780316066525"
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Title</label>
+              <input
+                value={editionQuery.title}
+                onChange={e => setEditionQuery(prev => ({ ...prev, title: e.target.value }))}
+                style={inputStyle}
+                placeholder="e.g. The Final Empire"
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Author (optional)</label>
+              <input
+                value={editionQuery.author}
+                onChange={e => setEditionQuery(prev => ({ ...prev, author: e.target.value }))}
+                style={inputStyle}
+                placeholder="e.g. Brandon Sanderson"
+              />
+            </div>
+          </div>
+
+          <button
+            onClick={handleFindEditions}
+            disabled={loading === 'editions'}
+            style={{ ...btnStyle, marginBottom: 12 }}
+          >
+            {loading === 'editions' ? 'Finding editions...' : 'Find Edition Covers'}
+          </button>
+
+          {editionStatus?.state === 'loading' && (
+            <div style={{ fontSize: 13, color: '#9a9488', marginBottom: 8 }}>Querying Open Library works + editions...</div>
+          )}
+          {editionStatus?.state === 'error' && (
+            <div style={{ fontSize: 13, color: '#e74c3c', marginBottom: 8 }}>✗ {editionStatus.message}</div>
+          )}
+          {editionStatus?.state === 'done' && editionStatus.message && (
+            <div style={{ fontSize: 13, color: '#5cb85c', marginBottom: 8 }}>✓ {editionStatus.message}</div>
+          )}
+
+          {editionResults && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ color: '#9a9488', fontSize: 12, marginBottom: 10 }}>
+                Found {editionResults.editions?.length || 0} edition{editionResults.editions?.length === 1 ? '' : 's'}
+                {editionResults.work_key ? ` for ${editionResults.work_key}` : ''}.
+              </div>
+
+              {(editionResults.editions || []).length === 0 ? (
+                <div style={{ color: '#9a9488', fontSize: 13 }}>No cover-bearing editions found for that query.</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 12, maxHeight: 520, overflowY: 'auto', paddingRight: 4 }}>
+                  {editionResults.editions.map((edition, idx) => (
+                    <div key={edition.edition_key || `${edition.title}-${idx}`} style={{ background: '#0f0e0c', border: '1px solid #2a2822', borderRadius: 8, padding: 10 }}>
+                      <div style={{ color: '#e8e4dc', fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                        {edition.title || 'Untitled edition'}
+                      </div>
+                      <div style={{ color: '#9a9488', fontSize: 11, marginBottom: 8 }}>
+                        {edition.publish_date || 'Unknown date'} - ISBNs: {(edition.isbns || []).join(', ') || 'none listed'}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                        {(edition.cover_urls || []).map(coverUrl => (
+                          <div key={coverUrl} style={{ width: 96 }}>
+                            <div style={{ width: 96, height: 144, borderRadius: 4, overflow: 'hidden', background: '#2a2822', marginBottom: 6 }}>
+                              <img src={coverUrl} alt={edition.title || 'Edition cover'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                            </div>
+                            <button
+                              onClick={() => handleSelectEditionCover(coverUrl, edition.isbns?.[0] || null)}
+                              disabled={loading === `edition-select-${coverUrl}` || !editionQuery.bookId.trim()}
+                              style={{
+                                ...btnStyle,
+                                width: '100%',
+                                padding: '6px 8px',
+                                fontSize: 11,
+                                opacity: !editionQuery.bookId.trim() ? 0.5 : 1
+                              }}
+                            >
+                              {loading === `edition-select-${coverUrl}` ? 'Applying...' : 'Use Cover'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </Section>
       </SectionGroup>
 
