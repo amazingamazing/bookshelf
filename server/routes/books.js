@@ -28,7 +28,21 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { rows } = await pool.query(`
-      SELECT b.*, a.name as author_name, s.name as series_name, s.tier as series_tier
+      SELECT
+        b.*,
+        a.name as author_name,
+        s.name as series_name,
+        s.tier as series_tier,
+        COALESCE(
+          ARRAY(
+            SELECT g.name
+            FROM series_genres sg
+            JOIN genres g ON g.id = sg.genre_id
+            WHERE sg.series_id = s.id
+            ORDER BY g.name
+          ),
+          '{}'
+        ) AS tags
       FROM books b
       LEFT JOIN authors a ON b.author_id = a.id
       LEFT JOIN series s ON b.series_id = s.id

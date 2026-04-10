@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 
 const TIERS = ['S','A','B','C','D','Unranked']
 const TIER_COLORS = { S: '#f4c542', A: '#6ea8fe', B: '#5cb85c', C: '#e67e22', D: '#e74c3c', Unranked: '#555' }
@@ -141,23 +141,17 @@ export default function SeriesView() {
             }}>
               <span style={{ color: '#555', fontSize: 13, minWidth: 24 }}>#{formatSeriesOrder(book.series_order)}</span>
               <div style={{ flex: 1 }}>
-                <button
-                  type="button"
-                  onClick={() => book.cover_url && window.open(book.cover_url, '_blank', 'noopener,noreferrer')}
+                <Link
+                  to={`/book/${book.id}`}
                   style={{
-                    background: 'none',
-                    border: 'none',
-                    color: book.cover_url ? '#6ea8fe' : '#e8e4dc',
+                    color: '#6ea8fe',
                     fontSize: 14,
-                    cursor: book.cover_url ? 'pointer' : 'default',
-                    padding: 0,
-                    textAlign: 'left'
+                    textDecoration: 'none'
                   }}
-                  title={book.cover_url ? 'Open book cover' : 'No cover available'}
-                  disabled={!book.cover_url}
+                  title="Open book page"
                 >
                   {book.title}
-                </button>
+                </Link>
               </div>
               <StatusBadge status={book.status} />
               {book.rating && <span style={{ color: '#f4c542', fontSize: 13 }}>{book.rating}★</span>}

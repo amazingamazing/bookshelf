@@ -2,6 +2,7 @@ import React from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import Bookshelf from './pages/Bookshelf'
 import SeriesView from './pages/SeriesView'
+import BookView from './pages/BookView'
 import TierList from './pages/TierList'
 import Import from './pages/Import'
 import Discover from './pages/Discover'
@@ -46,6 +47,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Bookshelf />} />
           <Route path="/series/:id" element={<SeriesView />} />
+          <Route path="/book/:id" element={<BookView />} />
           <Route path="/tiers" element={<TierList />} />
           <Route path="/discover" element={<Discover />} />
           <Route path="/import" element={<Import />} />

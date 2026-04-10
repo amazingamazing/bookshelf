@@ -394,7 +394,7 @@ export default function Bookshelf() {
               book={b}
               size={coverSize}
               dimmed={sortBy.includes('date') && b._missingCurrentSort}
-              onClick={() => b.series_id && navigate(`/series/${b.series_id}`)}
+              onClick={() => navigate(`/book/${b.id}`)}
             />
           )) : sortedSeries.map(s => (
             <SeriesStackCard
@@ -417,8 +417,7 @@ export default function Bookshelf() {
           series={expandedSeries}
           size={coverSize}
           onOpenBook={(book) => {
-            const seriesId = book.series_id || expandedSeries.openSeriesId
-            if (seriesId) navigate(`/series/${seriesId}`)
+            if (book.id) navigate(`/book/${book.id}`)
           }}
           onClose={() => setExpandedSeriesId(null)}
         />
@@ -473,12 +472,12 @@ function BookCard({ book, size, onClick, dimmed = false }) {
   return (
     <div onClick={onClick} title={`${book.title} by ${book.author_name || 'Unknown'}`}
       style={{
-        width: size, cursor: book.series_id ? 'pointer' : 'default', position: 'relative',
+        width: size, cursor: 'pointer', position: 'relative',
         transition: 'transform 0.15s', borderRadius: 6, overflow: 'hidden',
         opacity: dimmed ? 0.4 : 1,
         filter: dimmed ? 'grayscale(60%)' : 'none'
       }}
-      onMouseEnter={e => e.currentTarget.style.transform = book.series_id ? 'translateY(-4px) scale(1.02)' : 'none'}
+      onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-4px) scale(1.02)'}
       onMouseLeave={e => e.currentTarget.style.transform = 'none'}
     >
       <div style={{
