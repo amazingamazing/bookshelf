@@ -163,10 +163,19 @@ router.post('/audible', upload.single('file'), async (req, res) => {
             ? await findOrCreateSeries(client, seriesName, authorId)
             : null;
 
-          // Skip if already imported
+          // Skip if already imported, but backfill cover if missing
           if (asin) {
             const existing = await client.query('SELECT id FROM books WHERE audible_asin=$1', [asin]);
-            if (existing.rows[0]) { results.skipped++; continue; }
+            if (existing.rows[0]) {
+              if (coverUrl) {
+                await client.query(
+                  'UPDATE books SET cover_url=COALESCE(cover_url,$1) WHERE id=$2',
+                  [coverUrl, existing.rows[0].id]
+                );
+              }
+              results.skipped++;
+              continue;
+            }
           }
 
           // Check if it exists as a goodreads book, just add the asin
