@@ -27,7 +27,14 @@ export default function SeriesView() {
   const [form, setForm] = useState({})
   const [aiLoading, setAiLoading] = useState(false)
   const [related, setRelated] = useState(null)
-  const [fanart, setFanart] = useState({ loading: false, error: null, items: [], queries: [] })
+  const [fanart, setFanart] = useState({
+    loading: false,
+    error: null,
+    items: [],
+    queries: [],
+    metadataEnrichment: false,
+    metadataReason: null
+  })
   const [fanartPrefs, setFanartPrefs] = useState(() => readFanartPrefs())
 
   useEffect(() => {
@@ -75,7 +82,14 @@ export default function SeriesView() {
   }
 
   const loadSeriesFanart = async () => {
-    setFanart({ loading: true, error: null, items: [], queries: [] })
+    setFanart({
+      loading: true,
+      error: null,
+      items: [],
+      queries: [],
+      metadataEnrichment: false,
+      metadataReason: null
+    })
     try {
       const params = new URLSearchParams({
         series_id: String(id),
@@ -90,10 +104,19 @@ export default function SeriesView() {
         loading: false,
         error: null,
         items: data.items || [],
-        queries: data.queries || []
+        queries: data.queries || [],
+        metadataEnrichment: Boolean(data.metadata_enrichment),
+        metadataReason: data.metadata_enrichment_reason || null
       })
     } catch (err) {
-      setFanart({ loading: false, error: err.message, items: [], queries: [] })
+      setFanart({
+        loading: false,
+        error: err.message,
+        items: [],
+        queries: [],
+        metadataEnrichment: false,
+        metadataReason: null
+      })
     }
   }
 
@@ -230,6 +253,12 @@ export default function SeriesView() {
         <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
           Filters: {fanartPrefs.allowMature ? 'Mature allowed' : 'Mature filtered'} | Min edge {fanartPrefs.minEdge}px
         </div>
+        {!fanart.loading && (
+          <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
+            Ranking: {fanart.metadataEnrichment ? 'Quality + engagement (views/favourites/comments/downloads)' : 'Quality-only fallback'}
+            {!fanart.metadataEnrichment && fanart.metadataReason ? ` — ${fanart.metadataReason}` : ''}
+          </div>
+        )}
 
         {fanart.error && (
           <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{fanart.error}</div>
@@ -262,6 +291,11 @@ export default function SeriesView() {
                 <div style={{ padding: '8px 9px' }}>
                   <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
                   <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View on DeviantArt'}</div>
+                  {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads) && (
+                    <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
+                      ❤ {item.stats?.favourites || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
+                    </div>
+                  )}
                 </div>
               </a>
             ))}

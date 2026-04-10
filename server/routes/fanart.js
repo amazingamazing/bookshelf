@@ -2,6 +2,13 @@ const router = require('express').Router();
 const fetch = require('node-fetch');
 const { pool } = require('../db');
 
+const DEVIANTART_CLIENT_ID = process.env.DEVIANTART_CLIENT_ID || null;
+const DEVIANTART_CLIENT_SECRET = process.env.DEVIANTART_CLIENT_SECRET || null;
+const DEVIANTART_TOKEN_URL = 'https://www.deviantart.com/oauth2/token';
+const DEVIANTART_API_BASE = 'https://www.deviantart.com/api/v1/oauth2';
+
+let tokenCache = { accessToken: null, expiresAtMs: 0 };
+
 router.get('/deviantart', async (req, res) => {
   try {
     const {
@@ -95,14 +102,48 @@ router.get('/deviantart', async (req, res) => {
       if (withLiveImages.length >= limit) break;
     }
 
+    const canEnrich = Boolean(DEVIANTART_CLIENT_ID && DEVIANTART_CLIENT_SECRET);
+    let enriched = withLiveImages;
+    if (canEnrich && withLiveImages.length > 0) {
+      const metadataById = await fetchDeviationMetadata(withLiveImages.map(item => item.deviation_id).filter(Boolean), allowMature);
+      enriched = withLiveImages.map(item => {
+        const metadata = item.deviation_id ? metadataById.get(item.deviation_id) : null;
+        const stats = metadata?.stats || null;
+        const popularityScore = computePopularityScore(stats);
+        const qualityScore = computeQualityScore(item);
+        const score = popularityScore + qualityScore;
+        return {
+          ...item,
+          stats,
+          tags: metadata?.tags || [],
+          quality_score: Number(qualityScore.toFixed(3)),
+          popularity_score: Number(popularityScore.toFixed(3)),
+          score: Number(score.toFixed(3)),
+          metadata_enriched: Boolean(metadata)
+        };
+      }).sort((a, b) => b.score - a.score);
+    } else {
+      enriched = withLiveImages
+        .map(item => ({
+          ...item,
+          quality_score: Number(computeQualityScore(item).toFixed(3)),
+          popularity_score: null,
+          score: Number(computeQualityScore(item).toFixed(3)),
+          metadata_enriched: false
+        }))
+        .sort((a, b) => b.quality_score - a.quality_score);
+    }
+
     res.json({
       source: 'deviantart_rss',
       query: dedupedQueries.join(' || '),
       queries: dedupedQueries,
       allow_mature: allowMature,
       quality_floor_min_edge: minEdge,
-      count: withLiveImages.length,
-      items: withLiveImages
+      count: enriched.length,
+      metadata_enrichment: canEnrich,
+      metadata_enrichment_reason: canEnrich ? null : 'Set DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET to enable engagement-based ranking',
+      items: enriched
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -127,6 +168,7 @@ function parseRssItems(xml) {
 function parseRssItem(raw) {
   const title = decodeHtml(getTag(raw, 'title'));
   const link = getTag(raw, 'link');
+  const guid = getTag(raw, 'guid');
   const creator = decodeHtml(getDcCreator(raw));
   const pubDate = getTag(raw, 'pubDate');
   const mediaContent = getMediaTag(raw, 'media:content');
@@ -145,6 +187,7 @@ function parseRssItem(raw) {
     creator: creator || null,
     published_at: pubDate || null,
     image_url: imageUrl,
+    deviation_id: parseDeviationId(guid),
     image_width: imageWidth,
     image_height: imageHeight
   };
@@ -233,6 +276,88 @@ function passesQualityFloor(item, minEdge) {
   const height = Number(item.image_height);
   if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
   return Math.max(width, height) >= minEdge;
+}
+
+function parseDeviationId(value) {
+  const str = String(value || '').trim();
+  const match = str.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return match ? match[0].toUpperCase() : null;
+}
+
+function computePopularityScore(stats) {
+  if (!stats) return 0;
+  const views = Number(stats.views) || 0;
+  const favourites = Number(stats.favourites) || 0;
+  const comments = Number(stats.comments) || 0;
+  const downloads = Number(stats.downloads) || 0;
+  return (
+    Math.log1p(views) * 1.6 +
+    Math.log1p(favourites) * 3.2 +
+    Math.log1p(comments) * 1.3 +
+    Math.log1p(downloads) * 1.8
+  );
+}
+
+function computeQualityScore(item) {
+  const width = Number(item.image_width) || 0;
+  const height = Number(item.image_height) || 0;
+  const edge = Math.max(width, height);
+  if (!edge) return 0;
+  return Math.log1p(edge) * 1.8;
+}
+
+async function getAccessToken() {
+  if (!DEVIANTART_CLIENT_ID || !DEVIANTART_CLIENT_SECRET) return null;
+  const now = Date.now();
+  if (tokenCache.accessToken && tokenCache.expiresAtMs > now + 30000) return tokenCache.accessToken;
+
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: DEVIANTART_CLIENT_ID,
+    client_secret: DEVIANTART_CLIENT_SECRET
+  });
+  const res = await fetch(DEVIANTART_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  const expiresInSec = Number(data.expires_in) || 3600;
+  tokenCache = {
+    accessToken: data.access_token || null,
+    expiresAtMs: Date.now() + Math.max(60, expiresInSec - 60) * 1000
+  };
+  return tokenCache.accessToken;
+}
+
+async function fetchDeviationMetadata(deviationIds, allowMature) {
+  const token = await getAccessToken();
+  const result = new Map();
+  if (!token || !deviationIds.length) return result;
+
+  const uniqueIds = Array.from(new Set(deviationIds.filter(Boolean)));
+  const chunkSize = 10; // API limit for ext_stats
+
+  for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+    const chunk = uniqueIds.slice(i, i + chunkSize);
+    const params = new URLSearchParams();
+    params.set('access_token', token);
+    params.set('ext_stats', 'true');
+    params.set('mature_content', allowMature ? 'true' : 'false');
+    for (const deviationId of chunk) params.append('deviationids[]', deviationId);
+
+    const res = await fetch(`${DEVIANTART_API_BASE}/deviation/metadata?${params.toString()}`);
+    if (!res.ok) continue;
+    const data = await res.json();
+    const metadataRows = data.metadata || [];
+    for (const row of metadataRows) {
+      if (!row?.deviationid) continue;
+      result.set(String(row.deviationid).toUpperCase(), row);
+    }
+  }
+
+  return result;
 }
 
 module.exports = router;
