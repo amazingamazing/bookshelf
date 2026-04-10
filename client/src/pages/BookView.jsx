@@ -7,6 +7,7 @@ export default function BookView() {
   const [book, setBook] = useState(null)
   const [editionState, setEditionState] = useState({ loading: false, error: null, editions: [], workKey: null })
   const [selectingCover, setSelectingCover] = useState(null)
+  const [fanart, setFanart] = useState({ loading: false, error: null, items: [], query: null })
 
   const loadBook = async () => {
     const res = await fetch(`/api/books/${id}`)
@@ -17,6 +18,11 @@ export default function BookView() {
   useEffect(() => {
     loadBook()
   }, [id])
+
+  useEffect(() => {
+    if (!book?.id) return
+    loadFanArt()
+  }, [book?.id])
 
   if (!book) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading...</div>
 
@@ -67,6 +73,23 @@ export default function BookView() {
       setEditionState(prev => ({ ...prev, error: err.message }))
     } finally {
       setSelectingCover(null)
+    }
+  }
+
+  const loadFanArt = async () => {
+    setFanart({ loading: true, error: null, items: [], query: null })
+    try {
+      const res = await fetch(`/api/fanart/deviantart?book_id=${encodeURIComponent(id)}&limit=10`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to load fan art')
+      setFanart({
+        loading: false,
+        error: null,
+        items: data.items || [],
+        query: data.query || null
+      })
+    } catch (err) {
+      setFanart({ loading: false, error: err.message, items: [], query: null })
     }
   }
 
@@ -181,6 +204,70 @@ export default function BookView() {
                   ))}
                 </div>
               </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={sectionWrap}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+          <div>
+            <h2 style={{ fontSize: 18, color: '#e8e4dc', marginBottom: 4 }}>Fan Art (DeviantArt)</h2>
+            <div style={{ color: '#9a9488', fontSize: 13 }}>
+              Previewing linked artwork only. Images stay hosted on DeviantArt.
+            </div>
+          </div>
+          <button onClick={loadFanArt} disabled={fanart.loading} style={actionBtn}>
+            {fanart.loading ? 'Refreshing...' : 'Refresh Fan Art'}
+          </button>
+        </div>
+
+        {fanart.query && (
+          <div style={{ marginTop: 10, color: '#6a6460', fontSize: 12 }}>
+            Search query: {fanart.query}
+          </div>
+        )}
+
+        {fanart.error && (
+          <div style={{ marginTop: 12, color: '#e74c3c', fontSize: 13 }}>{fanart.error}</div>
+        )}
+
+        {fanart.loading && (
+          <div style={{ marginTop: 12, color: '#9a9488', fontSize: 13 }}>Searching DeviantArt fan art...</div>
+        )}
+
+        {!fanart.loading && !fanart.error && fanart.items.length === 0 && (
+          <div style={{ marginTop: 12, color: '#9a9488', fontSize: 13 }}>
+            No fan art results yet for this query.
+          </div>
+        )}
+
+        {fanart.items.length > 0 && (
+          <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}>
+            {fanart.items.map((item, idx) => (
+              <a
+                key={`${item.link}-${idx}`}
+                href={item.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  textDecoration: 'none',
+                  background: '#0f0e0c',
+                  border: '1px solid #2a2822',
+                  borderRadius: 8,
+                  overflow: 'hidden'
+                }}
+              >
+                <div style={{ width: '100%', aspectRatio: '2 / 3', background: '#2a2822' }}>
+                  <img src={item.image_url} alt={item.title} style={coverImg} />
+                </div>
+                <div style={{ padding: 8 }}>
+                  <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 4 }}>{item.title}</div>
+                  <div style={{ color: '#9a9488', fontSize: 11 }}>
+                    {item.creator ? `by ${item.creator}` : 'View on DeviantArt'}
+                  </div>
+                </div>
+              </a>
             ))}
           </div>
         )}

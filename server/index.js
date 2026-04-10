@@ -18,6 +18,7 @@ app.use('/api/import', require('./routes/import'));
 app.use('/api/export', require('./routes/export'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/covers', require('./routes/covers'));
+app.use('/api/fanart', require('./routes/fanart'));
 
 // Serve React frontend in production
 if (process.env.NODE_ENV === 'production') {
