@@ -110,7 +110,7 @@ export default function SeriesView() {
           background: '#2a2822', display: 'flex', alignItems: 'center', justifyContent: 'center'
         }}>
           {series.cover_url
-            ? <img src={series.cover_url} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ? <img src={series.cover_url} alt={series.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
             : <span style={{ fontSize: 48 }}>📚</span>}
         </div>
 
@@ -253,12 +253,11 @@ export default function SeriesView() {
                   textDecoration: 'none',
                   background: '#1a1814',
                   border: '1px solid #2a2822',
-                  borderRadius: 8,
-                  overflow: 'hidden'
+                  borderRadius: 8
                 }}
               >
-                <div style={{ width: '100%', aspectRatio: '2 / 3', background: '#2a2822' }}>
-                  <img src={item.image_url} alt={item.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                <div style={{ width: '100%', background: '#2a2822', padding: 8 }}>
+                  <img src={item.image_url} alt={item.title} style={{ width: '100%', height: 'auto', maxHeight: 260, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
                 </div>
                 <div style={{ padding: '8px 9px' }}>
                   <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>

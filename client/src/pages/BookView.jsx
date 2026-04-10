@@ -169,7 +169,7 @@ export default function BookView() {
                   {(edition.cover_urls || []).map(coverUrl => (
                     <div key={coverUrl} style={{ width: 108 }}>
                       <div style={candidateCoverWrap}>
-                        <img src={coverUrl} alt={edition.title || 'Edition cover'} style={coverImg} />
+                        <img src={coverUrl} alt={edition.title || 'Edition cover'} style={candidateImg} />
                       </div>
                       <button
                         onClick={() => applyCover(coverUrl, edition.isbns?.[0] || null, edition)}
@@ -235,7 +235,8 @@ const coverWrap = {
   justifyContent: 'center'
 }
 
-const coverImg = { width: '100%', height: '100%', objectFit: 'cover' }
+const coverImg = { width: '100%', height: '100%', objectFit: 'contain' }
+const candidateImg = { width: '100%', height: 'auto', objectFit: 'contain', display: 'block' }
 
 const sectionWrap = {
   marginTop: 28,
@@ -254,10 +255,15 @@ const editionCard = {
 
 const candidateCoverWrap = {
   width: 108,
-  height: 162,
+  minHeight: 96,
+  maxHeight: 180,
   borderRadius: 6,
   overflow: 'hidden',
-  background: '#2a2822'
+  background: '#2a2822',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 4
 }
 
 const actionBtn = {
