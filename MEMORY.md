@@ -13,6 +13,8 @@
 - [ ] series are grouped incorrectly
 - [ ] using js not typescript
 - [ ] using inline styling not CSS files
+- [ ] series to book fanout has awkward issues
+- [ ] a lot of DB resets, want to persist cover urls so no need to refetch
 
 ## Key decisions
 - series are ranked not individual books

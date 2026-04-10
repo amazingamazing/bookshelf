@@ -266,6 +266,11 @@ export default function Bookshelf() {
 
   const sortedBooks = sortItems(booksWithSortFields)
   const sortedSeries = sortItems(filteredSeries)
+  const expandedSeries = sortedSeries.find(s => s.id === expandedSeriesId) || null
+
+  useEffect(() => {
+    if (expandedSeriesId && view !== 'series') setExpandedSeriesId(null)
+  }, [expandedSeriesId, view])
 
   const hasPublicationDateData = books.some(b => dateToTs(b.published_date) != null)
   const hasReadDateData = books.some(b => dateToTs(b.date_read) != null)
@@ -305,7 +310,7 @@ export default function Bookshelf() {
   if (loading) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading your shelf...</div>
 
   return (
-    <div style={{ padding: '24px' }}>
+    <div style={{ padding: '24px' }} onClick={() => expandedSeriesId && setExpandedSeriesId(null)}>
       {/* Controls */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 24, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
@@ -374,15 +379,23 @@ export default function Bookshelf() {
             <SeriesStackCard
               key={s.id}
               series={s}
-              books={s.books || []}
               size={coverSize}
               expanded={expandedSeriesId === s.id}
-              onExpand={() => setExpandedSeriesId(s.id)}
-              onCollapse={() => setExpandedSeriesId(null)}
-              onOpen={() => s.openSeriesId && navigate(`/series/${s.openSeriesId}`)}
+              onToggle={(e) => {
+                e.stopPropagation()
+                setExpandedSeriesId(prev => prev === s.id ? null : s.id)
+              }}
             />
           ))}
         </div>
+      )}
+
+      {view === 'series' && expandedSeries && (
+        <FanoutOverlay
+          series={expandedSeries}
+          size={coverSize}
+          onClose={() => setExpandedSeriesId(null)}
+        />
       )}
 
       <div style={{ marginTop: 28, borderTop: '1px solid #2a2822', paddingTop: 16 }}>
@@ -471,53 +484,25 @@ function BookCard({ book, size, onClick }) {
   )
 }
 
-function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, onOpen }) {
+function SeriesStackCard({ series, size, expanded, onToggle }) {
   const [imgErr, setImgErr] = useState(false)
-  const [hoveredBookId, setHoveredBookId] = useState(null)
   const tierColor = TIER_COLORS[series.tier] || '#555'
   const readCount = Number(series.books_read || 0)
-  const totalCount = Number(series.book_count || books.length || 0)
+  const totalCount = Number(series.book_count || 0)
   const stackable = readCount > 1
   const stackDepth = stackable ? Math.min(4, Math.max(2, Math.ceil(totalCount / 2))) : 1
-  const sortedBooks = [...books].sort((a, b) => (a.series_order || 9999) - (b.series_order || 9999))
-  const fanBooks = sortedBooks
-  const primaryCover = series.cover_url || sortedBooks.find(b => b.cover_url)?.cover_url
-  const seriesHeight = Math.round(size * 1.5)
-  const fanCount = fanBooks.length
-  const fanAreaWidth = Math.min(Math.max(size * 3, size + 140), 620)
-  const slotSpacing = fanCount > 1 ? fanAreaWidth / (fanCount - 1) : fanAreaWidth
-  const targetFanWidth = Math.round(size * 0.75) // around 3/4 of series card width
-  const fanWidth = Math.max(16, Math.min(targetFanWidth, Math.round(slotSpacing * 0.9)))
-  const fanHeight = Math.round(fanWidth * 1.5)
-  const targetHoverHeight = Math.round(seriesHeight * 1.3)
-  const hoverScale = fanHeight > 0 ? targetHoverHeight / fanHeight : 1
-  const fanReserveSpace = expanded && stackable && fanCount > 0 ? Math.max(targetHoverHeight + 30, fanHeight + 30) : 0
-
-  const handleCardClick = () => {
-    if (!stackable) {
-      onOpen()
-      return
-    }
-    if (!expanded) {
-      onExpand()
-      return
-    }
-    onOpen()
-  }
+  const primaryCover = series.cover_url || series.books?.find(b => b.cover_url)?.cover_url
 
   return (
     <div title={`${series.name} by ${series.author_name || 'Unknown'}`}
       style={{
         width: size, cursor: 'pointer', position: 'relative',
         transition: 'transform 0.15s', borderRadius: 6, overflow: 'visible',
-        marginBottom: fanReserveSpace
+        boxShadow: expanded ? '0 0 0 2px #6ea8fe55' : 'none'
       }}
+      onClick={onToggle}
       onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-4px) scale(1.02)'}
-      onMouseLeave={e => {
-        e.currentTarget.style.transform = 'none'
-        setHoveredBookId(null)
-        if (expanded) onCollapse()
-      }}
+      onMouseLeave={e => e.currentTarget.style.transform = 'none'}
     >
       {/* Stack shadow layers */}
       {stackable && !expanded && (
@@ -539,7 +524,7 @@ function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, 
       )}
 
       {/* Main cover */}
-      <div onClick={handleCardClick} style={{
+      <div style={{
         width: size, height: Math.round(size * 1.5),
         background: primaryCover && !imgErr ? 'transparent' : '#2a2822',
         borderRadius: 6, overflow: 'hidden', position: 'relative',
@@ -597,88 +582,114 @@ function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, 
         )}
       </div>
 
-      {/* Fan out preview */}
-      {expanded && stackable && fanBooks.length > 0 && (
-        <div style={{
-          position: 'absolute',
-          top: seriesHeight + 10,
-          left: Math.round((size - fanAreaWidth) / 2),
-          width: fanAreaWidth,
-          height: Math.max(targetHoverHeight + 10, fanHeight + 10),
-          zIndex: 70
-        }}>
-          {fanBooks.map((book, idx) => {
-            const spread = fanBooks.length === 1 ? 0 : idx / (fanBooks.length - 1)
-            const left = Math.round(spread * Math.max(0, fanAreaWidth - fanWidth))
-            const rotate = -12 + spread * 24
-            const isHovered = hoveredBookId === book.id
-            return (
-              <div key={book.id} style={{
-                position: 'absolute',
-                left,
-                top: Math.max(0, Math.round((Math.abs(rotate) / 14) * 10)),
-                width: fanWidth,
-                height: fanHeight,
-                borderRadius: 4,
-                overflow: 'hidden',
-                border: '1px solid #3a3830',
-                boxShadow: '0 5px 16px rgba(0,0,0,0.45)',
-                transform: isHovered
-                  ? `translateY(-${Math.round(seriesHeight * 0.18)}px) rotate(${rotate}deg) scale(${hoverScale})`
-                  : `rotate(${rotate}deg)`,
-                transformOrigin: 'bottom center',
-                transition: 'transform 0.16s ease, box-shadow 0.16s ease',
-                background: '#1a1814',
-                zIndex: isHovered ? 200 : idx + 1
-              }}
-              onMouseEnter={() => setHoveredBookId(book.id)}
-              onMouseLeave={() => setHoveredBookId(null)}
-              title={book.title}
-              >
-                <div style={{
-                  position: 'absolute',
-                  top: 2,
-                  right: 2,
-                  zIndex: 2,
-                  fontSize: 9,
-                  color: '#e8e4dc',
-                  background: 'rgba(0,0,0,0.55)',
-                  borderRadius: 3,
-                  padding: '1px 3px'
-                }}>
-                  {book.series_order || idx + 1}
-                </div>
-                <div style={{ width: '100%', height: '100%' }}>
-                  {book.cover_url
-                    ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9a9488', fontSize: 10 }}>📖</div>}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      )}
-
-      {expanded && stackable && fanBooks.length > 0 && (
-        <div style={{
-          position: 'absolute',
-          top: seriesHeight + Math.max(targetHoverHeight, fanHeight) + 14,
-          left: Math.round((size - fanAreaWidth) / 2),
-          width: fanAreaWidth,
-          fontSize: 11,
-          color: '#9a9488',
-          textAlign: 'center'
-        }}>
-          Hover a book to preview larger
-        </div>
-      )}
-
       {size > 100 && (
         <div style={{ marginTop: 6, fontSize: 11, color: '#c8c4bc', lineHeight: 1.3,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {series.name}
         </div>
       )}
+    </div>
+  )
+}
+
+function FanoutOverlay({ series, size, onClose }) {
+  const [hoveredBookId, setHoveredBookId] = useState(null)
+  const books = [...(series.books || [])].sort((a, b) => (a.series_order || 9999) - (b.series_order || 9999))
+  const count = books.length
+  const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1200
+  const panelWidth = Math.min(1100, Math.max(560, Math.round(viewportW * 0.92)))
+  const innerWidth = panelWidth - 64
+  const baseWidthTarget = Math.round(size * 0.75)
+  const fitWidth = count > 0 ? Math.floor(innerWidth / (0.55 * count + 0.45)) : baseWidthTarget
+  const fanWidth = Math.max(22, Math.min(baseWidthTarget, fitWidth))
+  const fanHeight = Math.round(fanWidth * 1.5)
+  const hoverTargetWidth = Math.round(size * 1.5)
+  const hoverScale = fanWidth > 0 ? hoverTargetWidth / fanWidth : 1
+  const maxSpread = Math.max(0, innerWidth - fanWidth)
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 1000,
+        pointerEvents: 'none'
+      }}
+    >
+      <div
+        style={{
+          position: 'absolute',
+          left: '50%',
+          top: '52%',
+          transform: 'translate(-50%, -50%)',
+          width: panelWidth,
+          minHeight: Math.max(260, fanHeight + Math.round(size * 1.1)),
+          background: 'rgba(15,14,12,0.97)',
+          border: '1px solid #2a2822',
+          borderRadius: 12,
+          boxShadow: '0 18px 48px rgba(0,0,0,0.55)',
+          padding: '16px 18px 20px',
+          pointerEvents: 'auto'
+        }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onClose()
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+          <div style={{ color: '#e8e4dc', fontSize: 14, fontWeight: 600 }}>{series.name}</div>
+          <div style={{ color: '#9a9488', fontSize: 12 }}>
+            {count} books - click a book or outside to close
+          </div>
+        </div>
+        <div style={{
+          position: 'relative',
+          height: Math.max(170, fanHeight + Math.round(size * 0.9)),
+          overflow: 'visible'
+        }}>
+          {books.map((book, idx) => {
+            const spread = count === 1 ? 0.5 : idx / (count - 1)
+            const left = Math.round(spread * maxSpread)
+            const rotate = -16 + spread * 32
+            const isHovered = hoveredBookId === book.id
+            return (
+              <div
+                key={book.id}
+                title={book.title}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose()
+                }}
+                onMouseEnter={() => setHoveredBookId(book.id)}
+                onMouseLeave={() => setHoveredBookId(null)}
+                style={{
+                  position: 'absolute',
+                  left,
+                  top: Math.max(10, Math.round((Math.abs(rotate) / 16) * 12)),
+                  width: fanWidth,
+                  height: fanHeight,
+                  borderRadius: 6,
+                  overflow: 'hidden',
+                  border: '1px solid #3a3830',
+                  boxShadow: isHovered ? '0 10px 30px rgba(0,0,0,0.65)' : '0 6px 18px rgba(0,0,0,0.45)',
+                  transform: isHovered
+                    ? `translateY(-${Math.round(size * 0.24)}px) rotate(${rotate}deg) scale(${hoverScale})`
+                    : `rotate(${rotate}deg)`,
+                  transformOrigin: 'bottom center',
+                  transition: 'transform 0.16s ease, box-shadow 0.16s ease',
+                  background: '#1a1814',
+                  zIndex: isHovered ? 4000 : idx + 1,
+                  cursor: 'pointer'
+                }}
+              >
+                {book.cover_url
+                  ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9a9488', fontSize: 11 }}>📖</div>}
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
