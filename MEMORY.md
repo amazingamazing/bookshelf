@@ -3,18 +3,27 @@
 ## What's built
 - Goodreads + Audible import
 - Visual bookshelf cover grid
+- Book detail pages with series backlink
 - Series tier list with drag and drop
 - Discover page with AI recommendations
+- Multi-source cover waterfall (Google Books -> Open Library -> LibraryThing -> Internet Archive)
+- Edition browser (Open Library works/editions) with selectable alternate covers
+- Fan art on series pages (DeviantArt RSS + optional API metadata ranking)
+- Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
+- Fan art debug tools (stage counts + copy debug payload button)
 - Deployed on Render
 
 ## Current issues
-- [ ] how to handle adding covers not in open library
-- [ ] how to handle duplicate books already added
-- [ ] series are grouped incorrectly
+- [ ] tighten fan art relevance filtering to reduce unrelated results
+- [ ] tune creator diversity cap behavior to avoid over-collapsing result count
+- [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript
 - [ ] using inline styling not CSS files
-- [ ] series to book fanout has awkward issues
-- [ ] a lot of DB resets, want to persist cover urls so no need to refetch
+- [ ] reduce need for DB resets while iterating on imports/cover data
+- [ ] design a fun gallery mode to re-experience my bookshelf
+- [ ] improve fan art source quality/ranking signals and result variety
 
 ## Key decisions
 - series are ranked not individual books
+- fan art feature is series-level (not book-level)
+- do not download/store fan art binaries; only store and render external links/pointers
