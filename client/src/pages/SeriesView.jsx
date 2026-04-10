@@ -36,6 +36,12 @@ export default function SeriesView() {
     metadataReason: null
   })
   const [fanartPrefs, setFanartPrefs] = useState(() => readFanartPrefs())
+  const [fanartControls, setFanartControls] = useState({
+    sortMode: 'popular',
+    timeWindow: 'all',
+    excludeAi: true,
+    perCreatorCap: 2
+  })
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -47,7 +53,7 @@ export default function SeriesView() {
   useEffect(() => {
     if (!series?.id) return
     loadSeriesFanart()
-  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge])
+  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap])
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -95,7 +101,11 @@ export default function SeriesView() {
         series_id: String(id),
         limit: '10',
         allow_mature: fanartPrefs.allowMature ? 'true' : 'false',
-        min_edge: String(fanartPrefs.minEdge)
+        min_edge: String(fanartPrefs.minEdge),
+        sort_mode: fanartControls.sortMode,
+        time_window: fanartControls.timeWindow,
+        exclude_ai: fanartControls.excludeAi ? 'true' : 'false',
+        per_creator_cap: String(fanartControls.perCreatorCap)
       })
       const res = await fetch(`/api/fanart/deviantart?${params.toString()}`)
       const data = await res.json()
@@ -252,6 +262,48 @@ export default function SeriesView() {
         )}
         <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
           Filters: {fanartPrefs.allowMature ? 'Mature allowed' : 'Mature filtered'} | Min edge {fanartPrefs.minEdge}px
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <select
+            value={fanartControls.sortMode}
+            onChange={e => setFanartControls(prev => ({ ...prev, sortMode: e.target.value }))}
+            style={selectStyle}
+          >
+            <option value="popular">Sort: Popular</option>
+            <option value="newest">Sort: Newest</option>
+          </select>
+          <select
+            value={fanartControls.timeWindow}
+            onChange={e => setFanartControls(prev => ({ ...prev, timeWindow: e.target.value }))}
+            style={selectStyle}
+          >
+            <option value="all">Time: All time</option>
+            <option value="10y">Time: Last 10 years</option>
+            <option value="5y">Time: Last 5 years</option>
+            <option value="3y">Time: Last 3 years</option>
+            <option value="1y">Time: Last year</option>
+          </select>
+          <select
+            value={fanartControls.perCreatorCap}
+            onChange={e => setFanartControls(prev => ({ ...prev, perCreatorCap: Number(e.target.value) || 2 }))}
+            style={selectStyle}
+          >
+            <option value="1">Variety: max 1 per artist</option>
+            <option value="2">Variety: max 2 per artist</option>
+            <option value="3">Variety: max 3 per artist</option>
+            <option value="4">Variety: max 4 per artist</option>
+          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9a9488', fontSize: 12, padding: '0 4px' }}>
+            <input
+              type="checkbox"
+              checked={fanartControls.excludeAi}
+              onChange={e => setFanartControls(prev => ({ ...prev, excludeAi: e.target.checked }))}
+            />
+            Exclude AI art
+          </label>
+        </div>
+        <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
+          Variety setting controls artist diversity in each result set (lower cap = more unique creators).
         </div>
         {!fanart.loading && (
           <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>

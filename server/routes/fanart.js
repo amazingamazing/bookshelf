@@ -20,6 +20,10 @@ router.get('/deviantart', async (req, res) => {
     const limit = Math.max(1, Math.min(20, Number(rawLimit) || 10));
     const allowMature = parseBoolean(req.query.allow_mature, false);
     const minEdge = Math.max(200, Math.min(4000, Number(req.query.min_edge) || 700));
+    const sortMode = normalizeSortMode(req.query.sort_mode);
+    const timeWindow = normalizeTimeWindow(req.query.time_window);
+    const excludeAi = parseBoolean(req.query.exclude_ai, true);
+    const perCreatorCap = Math.max(1, Math.min(5, Number(req.query.per_creator_cap) || 2));
 
     let searchText = (rawQuery || '').trim();
     const searchQueries = [];
@@ -94,12 +98,14 @@ router.get('/deviantart', async (req, res) => {
     }
 
     const withLiveImages = [];
+    const targetCandidatePool = Math.max(limit * 6, 24);
     for (const item of unique) {
       const ok = await urlLooksLikeImage(item.image_url);
       if (!ok) continue;
       if (!passesQualityFloor(item, minEdge)) continue;
+      if (!passesTimeWindow(item, timeWindow)) continue;
       withLiveImages.push(item);
-      if (withLiveImages.length >= limit) break;
+      if (withLiveImages.length >= targetCandidatePool) break;
     }
 
     const canEnrich = Boolean(DEVIANTART_CLIENT_ID && DEVIANTART_CLIENT_SECRET);
@@ -115,24 +121,30 @@ router.get('/deviantart', async (req, res) => {
         return {
           ...item,
           stats,
-          tags: metadata?.tags || [],
+          tags: normalizeTags(metadata?.tags || []),
           quality_score: Number(qualityScore.toFixed(3)),
           popularity_score: Number(popularityScore.toFixed(3)),
           score: Number(score.toFixed(3)),
           metadata_enriched: Boolean(metadata)
         };
-      }).sort((a, b) => b.score - a.score);
+      });
     } else {
       enriched = withLiveImages
         .map(item => ({
           ...item,
+          tags: [],
           quality_score: Number(computeQualityScore(item).toFixed(3)),
           popularity_score: null,
           score: Number(computeQualityScore(item).toFixed(3)),
           metadata_enriched: false
-        }))
-        .sort((a, b) => b.quality_score - a.quality_score);
+        }));
     }
+
+    let filtered = enriched;
+    if (excludeAi) filtered = filtered.filter(item => !looksLikeAiArt(item));
+
+    const sorted = sortFanartItems(filtered, sortMode);
+    const diversified = diversifyByCreator(sorted, limit, perCreatorCap);
 
     res.json({
       source: 'deviantart_rss',
@@ -140,10 +152,14 @@ router.get('/deviantart', async (req, res) => {
       queries: dedupedQueries,
       allow_mature: allowMature,
       quality_floor_min_edge: minEdge,
-      count: enriched.length,
+      sort_mode: sortMode,
+      time_window: timeWindow,
+      exclude_ai: excludeAi,
+      per_creator_cap: perCreatorCap,
+      count: diversified.length,
       metadata_enrichment: canEnrich,
       metadata_enrichment_reason: canEnrich ? null : 'Set DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET to enable engagement-based ranking',
-      items: enriched
+      items: diversified
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -231,11 +247,20 @@ function stripCdata(value) {
 
 function decodeHtml(value) {
   return String(value || '')
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = Number(dec);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : _;
+    })
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
 }
 
 async function urlLooksLikeImage(url) {
@@ -278,6 +303,15 @@ function passesQualityFloor(item, minEdge) {
   return Math.max(width, height) >= minEdge;
 }
 
+function passesTimeWindow(item, timeWindow) {
+  if (timeWindow === 'all') return true;
+  const ms = parsePublishedAtMs(item.published_at);
+  if (!ms) return true; // keep unknowns instead of over-filtering
+  const now = Date.now();
+  const cutoff = now - timeWindowToMs(timeWindow);
+  return ms >= cutoff;
+}
+
 function parseDeviationId(value) {
   const str = String(value || '').trim();
   const match = str.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
@@ -304,6 +338,21 @@ function computeQualityScore(item) {
   const edge = Math.max(width, height);
   if (!edge) return 0;
   return Math.log1p(edge) * 1.8;
+}
+
+function sortFanartItems(items, sortMode) {
+  const arr = [...items];
+  if (sortMode === 'newest') {
+    arr.sort((a, b) => {
+      const ams = parsePublishedAtMs(a.published_at) || 0;
+      const bms = parsePublishedAtMs(b.published_at) || 0;
+      if (bms !== ams) return bms - ams;
+      return (b.score || 0) - (a.score || 0);
+    });
+    return arr;
+  }
+  arr.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return arr;
 }
 
 async function getAccessToken() {
@@ -358,6 +407,75 @@ async function fetchDeviationMetadata(deviationIds, allowMature) {
   }
 
   return result;
+}
+
+function diversifyByCreator(items, limit, perCreatorCap) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const byCreator = new Map();
+  const selected = [];
+  const remaining = [];
+
+  for (const item of items) {
+    const key = normalizeCreator(item.creator);
+    const count = byCreator.get(key) || 0;
+    if (count < perCreatorCap) {
+      selected.push(item);
+      byCreator.set(key, count + 1);
+      if (selected.length >= limit) return selected;
+    } else {
+      remaining.push(item);
+    }
+  }
+
+  for (const item of remaining) {
+    selected.push(item);
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
+function normalizeCreator(creator) {
+  const raw = String(creator || '').trim().toLowerCase();
+  return raw || '__unknown_creator__';
+}
+
+function normalizeSortMode(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return v === 'newest' ? 'newest' : 'popular';
+}
+
+function normalizeTimeWindow(value) {
+  const v = String(value || '').trim().toLowerCase();
+  if (['1y', '3y', '5y', '10y', 'all'].includes(v)) return v;
+  return 'all';
+}
+
+function timeWindowToMs(windowKey) {
+  const day = 24 * 60 * 60 * 1000;
+  const map = { '1y': 365 * day, '3y': 3 * 365 * day, '5y': 5 * 365 * day, '10y': 10 * 365 * day };
+  return map[windowKey] || Number.MAX_SAFE_INTEGER;
+}
+
+function parsePublishedAtMs(raw) {
+  const ts = Date.parse(String(raw || ''));
+  return Number.isNaN(ts) ? null : ts;
+}
+
+function normalizeTags(tags) {
+  return tags
+    .map(tag => (typeof tag === 'string' ? tag : tag?.tag_name))
+    .map(tag => String(tag || '').trim())
+    .filter(Boolean);
+}
+
+function looksLikeAiArt(item) {
+  const hay = [
+    item.title,
+    ...(item.tags || []),
+    item.query
+  ].join(' ').toLowerCase();
+
+  return /(^|\W)(ai|midjourney|stable\s*diffusion|dall[\s-]?e|generative|ai[-\s]?generated|sdxl|novelai)(\W|$)/i.test(hay);
 }
 
 module.exports = router;
