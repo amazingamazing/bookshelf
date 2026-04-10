@@ -470,7 +470,11 @@ function diversifyByCreator(items, limit, perCreatorCap) {
   const selected = [];
 
   for (const item of items) {
-    const key = normalizeCreator(item.creator_key || item.creator);
+    let key = normalizeCreator(item.creator_key || item.creator);
+    if (key === '__unknown_creator__') {
+      // Don't collapse all unknown creators into one bucket.
+      key = `__unknown_creator__:${item.deviation_id || item.link || Math.random()}`;
+    }
     const count = byCreator.get(key) || 0;
     if (count < perCreatorCap) {
       selected.push(item);
@@ -491,12 +495,17 @@ function deriveCreatorKey(creator, link) {
   if (fromCreator && fromCreator !== '__unknown_creator__') return fromCreator;
   const str = String(link || '');
   const match = str.match(/https?:\/\/([a-z0-9-]+)\.deviantart\.com/i);
-  if (!match) return '__unknown_creator__';
-  return String(match[1] || '').toLowerCase();
+  if (match) return String(match[1] || '').toLowerCase();
+  const pathMatch = str.match(/https?:\/\/(?:www\.)?deviantart\.com\/([a-z0-9-]+)\//i);
+  if (pathMatch) return String(pathMatch[1] || '').toLowerCase();
+  return '__unknown_creator__';
 }
 
 function evaluateRelevance(item, profiles, anchorPhrases) {
   if (!profiles.length) return { pass: true, reason: 'no_profiles' };
+  const noisy = normalizeSearchText(`${item.title} ${item.description_text}`);
+  if (/\b(pdf|script|movie\s+review|review)\b/i.test(noisy)) return { pass: false, reason: 'noise_term' };
+
   const hayTitleTags = normalizeSearchText([
     item.title,
     ...(item.tags || []),
@@ -529,10 +538,6 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
       return { pass: true, reason: `desc_tokens:${matchesInDescription}` };
     }
   }
-
-  // Hard negative guard for obvious non-fanart non-content items when relevance is weak.
-  const noisy = normalizeSearchText(`${item.title} ${item.description_text}`);
-  if (/\b(pdf|script|movie\s+review|review)\b/i.test(noisy)) return { pass: false, reason: 'noise_term' };
 
   return { pass: false, reason: 'no_anchor_match' };
 }

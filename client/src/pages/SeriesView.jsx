@@ -43,6 +43,7 @@ export default function SeriesView() {
     excludeAi: true,
     perCreatorCap: 2
   })
+  const [debugCopyStatus, setDebugCopyStatus] = useState('')
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -131,6 +132,36 @@ export default function SeriesView() {
         metadataReason: null,
         debug: null
       })
+    }
+  }
+
+  const copyDebugDetails = async () => {
+    if (!fanart.debug) return
+    const payload = {
+      seriesId: id,
+      controls: fanartControls,
+      prefs: fanartPrefs,
+      queries: fanart.queries,
+      debug: fanart.debug,
+      items: fanart.items.map(item => ({
+        title: item.title,
+        creator: item.creator,
+        link: item.link,
+        query: item.query,
+        relevance_reason: item.relevance_reason,
+        score: item.score,
+        quality_score: item.quality_score,
+        popularity_score: item.popularity_score,
+        stats: item.stats || null
+      }))
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setDebugCopyStatus('Copied')
+      setTimeout(() => setDebugCopyStatus(''), 1500)
+    } catch {
+      setDebugCopyStatus('Copy failed')
+      setTimeout(() => setDebugCopyStatus(''), 1800)
     }
   }
 
@@ -318,6 +349,11 @@ export default function SeriesView() {
         {fanart.debug && (
           <details style={{ marginBottom: 12 }}>
             <summary style={{ cursor: 'pointer', color: '#9a9488', fontSize: 12 }}>Debug details</summary>
+            <div style={{ marginTop: 8, marginBottom: 8 }}>
+              <button onClick={copyDebugDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
+                {debugCopyStatus || 'Copy debug details'}
+              </button>
+            </div>
             <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
               <div>Merged candidates: {fanart.debug.stage_counts?.merged ?? 0}</div>
               <div>Unique links: {fanart.debug.stage_counts?.unique_links ?? 0}</div>
