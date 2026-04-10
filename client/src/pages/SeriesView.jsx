@@ -12,6 +12,7 @@ export default function SeriesView() {
   const [form, setForm] = useState({})
   const [aiLoading, setAiLoading] = useState(false)
   const [related, setRelated] = useState(null)
+  const [fanart, setFanart] = useState({ loading: false, error: null, items: [], queries: [] })
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -19,6 +20,11 @@ export default function SeriesView() {
       setForm({ tier: data.tier, rating: data.rating, notes: data.notes, status: data.status })
     })
   }, [id])
+
+  useEffect(() => {
+    if (!series?.id) return
+    loadSeriesFanart()
+  }, [series?.id])
 
   const save = async () => {
     await fetch(`/api/series/${id}`, {
@@ -42,6 +48,23 @@ export default function SeriesView() {
     })
     setRelated(await res.json())
     setAiLoading(false)
+  }
+
+  const loadSeriesFanart = async () => {
+    setFanart({ loading: true, error: null, items: [], queries: [] })
+    try {
+      const res = await fetch(`/api/fanart/deviantart?series_id=${encodeURIComponent(id)}&limit=10`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch fan art')
+      setFanart({
+        loading: false,
+        error: null,
+        items: data.items || [],
+        queries: data.queries || []
+      })
+    } catch (err) {
+      setFanart({ loading: false, error: err.message, items: [], queries: [] })
+    }
   }
 
   if (!series) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading...</div>
@@ -158,6 +181,60 @@ export default function SeriesView() {
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Series fan art */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <h2 style={{ color: '#e8e4dc', fontSize: 18 }}>Fan art (DeviantArt)</h2>
+          <button onClick={loadSeriesFanart} disabled={fanart.loading} style={actionBtn}>
+            {fanart.loading ? 'Searching...' : 'Refresh fan art'}
+          </button>
+        </div>
+
+        {fanart.queries?.length > 0 && (
+          <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
+            Searches: {fanart.queries.join(' | ')}
+          </div>
+        )}
+
+        {fanart.error && (
+          <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{fanart.error}</div>
+        )}
+
+        {!fanart.loading && !fanart.error && fanart.items.length === 0 && (
+          <div style={{ color: '#9a9488', fontSize: 13 }}>
+            No live fan art previews found yet for this series.
+          </div>
+        )}
+
+        {fanart.items.length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
+            {fanart.items.map((item, i) => (
+              <a
+                key={`${item.link}-${i}`}
+                href={item.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  textDecoration: 'none',
+                  background: '#1a1814',
+                  border: '1px solid #2a2822',
+                  borderRadius: 8,
+                  overflow: 'hidden'
+                }}
+              >
+                <div style={{ width: '100%', aspectRatio: '2 / 3', background: '#2a2822' }}>
+                  <img src={item.image_url} alt={item.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                <div style={{ padding: '8px 9px' }}>
+                  <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
+                  <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View on DeviantArt'}</div>
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Similar series */}
