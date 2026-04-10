@@ -621,15 +621,34 @@ function FanoutOverlay({ series, size, onClose }) {
   const books = [...(series.books || [])].sort((a, b) => (a.series_order || 9999) - (b.series_order || 9999))
   const count = books.length
   const viewportW = typeof window !== 'undefined' ? window.innerWidth : 1200
-  const panelWidth = Math.min(1100, Math.max(560, Math.round(viewportW * 0.92)))
-  const innerWidth = panelWidth - 64
-  const baseWidthTarget = Math.round(size * 0.75)
-  const fitWidth = count > 0 ? Math.floor(innerWidth / (0.55 * count + 0.45)) : baseWidthTarget
-  const fanWidth = Math.max(22, Math.min(baseWidthTarget, fitWidth))
+  const maxPanelWidth = Math.min(1280, Math.round(viewportW * 0.96))
+  const minPanelWidth = 420
+  const maxInnerWidth = maxPanelWidth - 64
+  const minInnerWidth = minPanelWidth - 64
+  const baseWidthTarget = Math.round(size * 0.75) // requested: around 75% base size
+  const minFanWidth = 20
+  const density = Math.min(1, Math.max(0, (count - 3) / 14))
+  const stepFactor = 0.9 - density * 0.42 // sparse for short series, tighter for long series
+
+  let fanWidth = baseWidthTarget
+  let step = fanWidth * stepFactor
+  let neededInner = fanWidth + Math.max(0, count - 1) * step
+
+  if (neededInner > maxInnerWidth) {
+    const denom = 1 + Math.max(0, count - 1) * stepFactor
+    fanWidth = Math.max(minFanWidth, Math.floor(maxInnerWidth / denom))
+    step = fanWidth * stepFactor
+    neededInner = fanWidth + Math.max(0, count - 1) * step
+  }
+
+  const innerWidth = Math.max(minInnerWidth, Math.min(maxInnerWidth, Math.ceil(neededInner + 24)))
+  const panelWidth = innerWidth + 64
   const fanHeight = Math.round(fanWidth * 1.5)
   const hoverTargetWidth = Math.round(size * 1.5)
   const hoverScale = fanWidth > 0 ? hoverTargetWidth / fanWidth : 1
-  const maxSpread = Math.max(0, innerWidth - fanWidth)
+  const usedWidth = fanWidth + Math.max(0, count - 1) * step
+  const centerOffset = Math.max(0, Math.round((innerWidth - usedWidth) / 2))
+  const maxRotate = Math.max(8, 16 - Math.floor(density * 8))
 
   return (
     <div
@@ -672,9 +691,11 @@ function FanoutOverlay({ series, size, onClose }) {
           overflow: 'visible'
         }}>
           {books.map((book, idx) => {
-            const spread = count === 1 ? 0.5 : idx / (count - 1)
-            const left = Math.round(spread * maxSpread)
-            const rotate = -16 + spread * 32
+            const spread = count <= 1 ? 0.5 : idx / (count - 1)
+            const left = count <= 1
+              ? Math.round((innerWidth - fanWidth) / 2)
+              : Math.round(centerOffset + idx * step)
+            const rotate = -maxRotate + spread * (maxRotate * 2)
             const isHovered = hoveredBookId === book.id
             return (
               <div
