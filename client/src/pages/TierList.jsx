@@ -15,10 +15,57 @@ export default function TierList() {
   const [saving, setSaving] = useState(false)
   const [exporting, setExporting] = useState(false)
   const tierRef = useRef()
+  const scrollRef = useRef({ raf: null, delta: 0 })
 
   useEffect(() => {
     fetch('/api/series').then(r => r.json()).then(setSeries)
   }, [])
+
+  useEffect(() => {
+    const onDragOver = (e) => {
+      if (!dragging) return
+      const edge = 120
+      const maxSpeed = 22
+      let delta = 0
+      if (e.clientY < edge) {
+        const t = (edge - e.clientY) / edge
+        delta = -Math.max(4, Math.round(maxSpeed * t))
+      } else if (e.clientY > window.innerHeight - edge) {
+        const t = (e.clientY - (window.innerHeight - edge)) / edge
+        delta = Math.max(4, Math.round(maxSpeed * t))
+      }
+      scrollRef.current.delta = delta
+      if (delta !== 0 && !scrollRef.current.raf) {
+        const tick = () => {
+          if (scrollRef.current.delta === 0) {
+            scrollRef.current.raf = null
+            return
+          }
+          window.scrollBy(0, scrollRef.current.delta)
+          scrollRef.current.raf = requestAnimationFrame(tick)
+        }
+        scrollRef.current.raf = requestAnimationFrame(tick)
+      }
+    }
+
+    const onDragEnd = () => {
+      scrollRef.current.delta = 0
+      if (scrollRef.current.raf) {
+        cancelAnimationFrame(scrollRef.current.raf)
+        scrollRef.current.raf = null
+      }
+    }
+
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDragEnd)
+    window.addEventListener('dragend', onDragEnd)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDragEnd)
+      window.removeEventListener('dragend', onDragEnd)
+      onDragEnd()
+    }
+  }, [dragging])
 
   const moveTo = (seriesId, newTier) => {
     setSeries(prev => prev.map(s => s.id === seriesId ? { ...s, tier: newTier } : s))
