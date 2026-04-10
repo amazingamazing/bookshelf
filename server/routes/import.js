@@ -260,6 +260,7 @@ router.post('/audible', upload.single('file'), async (req, res) => {
           const authorRaw = (row['Author'] || row['author'] || row['Authors'] || '')?.trim();
           const asin = (row['ASIN'] || row['asin'] || '')?.trim();
           const coverUrl = (row['Cover'] || row['cover'] || row['Cover URL'] || row['cover_url'] || row['Image'] || '')?.trim() || null;
+          const releaseDate = (row['Release Date'] || row['release_date'] || row['release date'] || '').trim() || null;
 
           const authorId = await findOrCreateAuthor(client, authorRaw);
 
@@ -276,12 +277,15 @@ router.post('/audible', upload.single('file'), async (req, res) => {
           if (asin) {
             const existing = await client.query('SELECT id FROM books WHERE audible_asin=$1', [asin]);
             if (existing.rows[0]) {
-              if (coverUrl) {
-                await client.query(
-                  'UPDATE books SET cover_url=COALESCE(cover_url,$1) WHERE id=$2',
-                  [coverUrl, existing.rows[0].id]
-                );
-              }
+              await client.query(
+                `UPDATE books
+                 SET cover_url=COALESCE(cover_url,$1),
+                     published_date=COALESCE(published_date,$2),
+                     series_id=COALESCE(series_id,$3),
+                     series_order=COALESCE(series_order,$4)
+                 WHERE id=$5`,
+                [coverUrl, releaseDate, seriesId, seriesOrder, existing.rows[0].id]
+              );
               results.skipped++;
               continue;
             }
@@ -299,16 +303,17 @@ router.post('/audible', upload.single('file'), async (req, res) => {
                SET audible_asin=$1,
                    cover_url=COALESCE(cover_url,$2),
                    series_id=COALESCE(series_id,$3),
-                   series_order=COALESCE(series_order,$4)
-               WHERE id=$5`,
-              [asin, coverUrl, seriesId, seriesOrder, existing.rows[0].id]
+                   series_order=COALESCE(series_order,$4),
+                   published_date=COALESCE(published_date,$5)
+               WHERE id=$6`,
+              [asin, coverUrl, seriesId, seriesOrder, releaseDate, existing.rows[0].id]
             );
             results.skipped++;
           } else {
             await client.query(`
-              INSERT INTO books (title, author_id, series_id, series_order, audible_asin, cover_url, status, source)
-              VALUES ($1,$2,$3,$4,$5,$6,'Read','audible')
-            `, [cleanTitle, authorId, seriesId, seriesOrder, asin, coverUrl]);
+              INSERT INTO books (title, author_id, series_id, series_order, audible_asin, cover_url, published_date, status, source)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,'Read','audible')
+            `, [cleanTitle, authorId, seriesId, seriesOrder, asin, coverUrl, releaseDate]);
             results.imported++;
           }
         } catch (rowErr) {

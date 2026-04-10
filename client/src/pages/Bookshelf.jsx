@@ -254,6 +254,25 @@ export default function Bookshelf() {
   const sortedBooks = sortItems(booksWithSortFields)
   const sortedSeries = sortItems(filteredSeries)
 
+  const hasPublicationDateData = books.some(b => dateToTs(b.published_date) != null)
+  const hasReadDateData = books.some(b => dateToTs(b.date_read) != null)
+  const sortOptions = [
+    { value: 'title', label: 'Sort: Title' },
+    { value: 'author', label: 'Sort: Author' },
+    { value: 'series_title', label: 'Sort: Series title' },
+    { value: 'series_length', label: 'Sort: Series length (read)' },
+    ...(hasPublicationDateData ? [{ value: 'publication_date', label: 'Sort: Publication/release date' }] : []),
+    ...(hasReadDateData ? [
+      { value: 'last_read_date', label: 'Sort: Last read date' },
+      { value: 'first_read_date', label: 'Sort: First read date' }
+    ] : [])
+  ]
+
+  useEffect(() => {
+    const available = new Set(sortOptions.map(o => o.value))
+    if (!available.has(sortBy)) setSortBy('title')
+  }, [sortBy, hasPublicationDateData, hasReadDateData])
+
   const coverSize = Math.round(120 * zoom)
 
   if (loading) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading your shelf...</div>
@@ -277,13 +296,9 @@ export default function Bookshelf() {
           {['Read','Currently Reading','Want to Read','Dropped'].map(s => <option key={s} value={s}>{s}</option>)}
         </select>
         <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={selectStyle}>
-          <option value="title">Sort: Title</option>
-          <option value="author">Sort: Author</option>
-          <option value="series_title">Sort: Series title</option>
-          <option value="series_length">Sort: Series length (read)</option>
-          <option value="publication_date">Sort: Publication/release date</option>
-          <option value="last_read_date">Sort: Last read date</option>
-          <option value="first_read_date">Sort: First read date</option>
+          {sortOptions.map(option => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
         <select value={sortDir} onChange={e => setSortDir(e.target.value)} style={selectStyle}>
           <option value="asc">Asc</option>
