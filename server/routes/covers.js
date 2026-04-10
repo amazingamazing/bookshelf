@@ -18,11 +18,14 @@ router.get('/lookup', async (req, res) => {
     }
 
     if (!coverUrl && title) {
-      // Fall back to search
-      const q = encodeURIComponent(`${title} ${author || ''}`);
-      const searchRes = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=1&fields=cover_i,isbn`);
+      const cleanTitle = title.replace(/\s*\([^)]*#[\d.]+[^)]*\)/g, '').trim();
+      const q = encodeURIComponent(`${cleanTitle} ${author || ''}`);
+      const searchRes = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=3&fields=cover_i,author_name`);
       const searchData = await searchRes.json();
-      const doc = searchData.docs?.[0];
+      const authorLower = (author || '').toLowerCase();
+      const doc = searchData.docs?.find(d =>
+        d.cover_i && authorLower && d.author_name?.some(a => a.toLowerCase().includes(authorLower.split(' ').slice(-1)[0]))
+      ) || searchData.docs?.find(d => d.cover_i);
       if (doc?.cover_i) {
         coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
       }
@@ -61,10 +64,16 @@ router.post('/fetch-missing', async (req, res) => {
         }
 
         if (!coverUrl) {
-          const q = encodeURIComponent(`${book.title} ${book.author || ''}`);
-          const searchRes = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=1&fields=cover_i`);
+          // Strip series parentheticals like "(The Hunger Games, #3)" before searching
+          const cleanTitle = book.title.replace(/\s*\([^)]*#[\d.]+[^)]*\)/g, '').trim();
+          const q = encodeURIComponent(`${cleanTitle} ${book.author || ''}`);
+          const searchRes = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=3&fields=cover_i,author_name`);
           const searchData = await searchRes.json();
-          const doc = searchData.docs?.[0];
+          // Prefer a result whose author matches, fall back to first result with a cover
+          const authorLower = (book.author || '').toLowerCase();
+          const doc = searchData.docs?.find(d =>
+            d.cover_i && authorLower && d.author_name?.some(a => a.toLowerCase().includes(authorLower.split(' ').slice(-1)[0]))
+          ) || searchData.docs?.find(d => d.cover_i);
           if (doc?.cover_i) {
             coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
             method = book.isbn ? 'title_fallback' : 'title_only';
