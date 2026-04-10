@@ -44,6 +44,8 @@ router.get('/deviantart', async (req, res) => {
       const pieces = [b.title, b.series_name, b.author_name, 'fan art'];
       searchText = pieces.filter(Boolean).join(' ');
       searchQueries.push(searchText);
+      searchQueries.push([b.title, 'fan art'].filter(Boolean).join(' '));
+      if (b.series_name) searchQueries.push([b.series_name, 'fan art'].filter(Boolean).join(' '));
       if (b.title) relevanceHints.push(b.title);
       if (b.series_name) relevanceHints.push(b.series_name);
     }
@@ -70,11 +72,19 @@ router.get('/deviantart', async (req, res) => {
 
       const seriesQuery = [s.series_name, s.author_name, 'fan art'].filter(Boolean).join(' ');
       searchQueries.push(seriesQuery);
+      searchQueries.push([s.series_name, 'fan art'].filter(Boolean).join(' '));
       if (s.series_name) relevanceHints.push(s.series_name);
 
       if (s.first_book_title) {
         const bookOneQuery = [s.first_book_title, s.author_name, 'fan art'].filter(Boolean).join(' ');
         searchQueries.push(bookOneQuery);
+        searchQueries.push([s.first_book_title, 'fan art'].filter(Boolean).join(' '));
+        const shortBookTitle = stripBookSubtitle(s.first_book_title);
+        if (shortBookTitle && shortBookTitle !== s.first_book_title) {
+          searchQueries.push([shortBookTitle, 'fan art'].filter(Boolean).join(' '));
+          searchQueries.push([shortBookTitle, s.series_name, 'fan art'].filter(Boolean).join(' '));
+          relevanceHints.push(shortBookTitle);
+        }
         relevanceHints.push(s.first_book_title);
       }
     }
@@ -530,7 +540,7 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
   }
 
   // Guardrail: require at least some anchor signal in title/tags/creator.
-  if (anchorTokenHitCount < 2) return { pass: false, reason: 'anchor_token_miss' };
+  if (anchorTokenHitCount < 1) return { pass: false, reason: 'anchor_token_miss' };
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
@@ -564,7 +574,7 @@ function isNoiseToken(token) {
   return [
     'fan', 'art', 'series', 'book', 'books', 'review', 'movie', 'pdf',
     'the', 'and', 'with', 'from', 'for', 'this', 'that', 'one', 'last',
-    'hosts', 'morning'
+    'hosts', 'morning', 'time', 'world'
   ].includes(token);
 }
 
@@ -583,6 +593,14 @@ function stripHtml(value) {
 
 function stripFanArtSuffix(value) {
   return String(value || '').replace(/\s+fan\s+art\s*$/i, '').trim();
+}
+
+function stripBookSubtitle(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  // "The Eye of the World: Book One of The Wheel of Time" => "The Eye of the World"
+  const colonSplit = raw.split(':')[0].trim();
+  return colonSplit || raw;
 }
 
 function normalizeSortMode(value) {
