@@ -27,6 +27,7 @@ router.get('/deviantart', async (req, res) => {
 
     let searchText = (rawQuery || '').trim();
     const searchQueries = [];
+    const relevanceHints = [];
     if (rawBookId) {
       const { rows } = await pool.query(`
         SELECT
@@ -43,6 +44,8 @@ router.get('/deviantart', async (req, res) => {
       const pieces = [b.title, b.series_name, b.author_name, 'fan art'];
       searchText = pieces.filter(Boolean).join(' ');
       searchQueries.push(searchText);
+      if (b.title) relevanceHints.push(b.title);
+      if (b.series_name) relevanceHints.push(b.series_name);
     }
 
     if (rawSeriesId) {
@@ -67,10 +70,12 @@ router.get('/deviantart', async (req, res) => {
 
       const seriesQuery = [s.series_name, s.author_name, 'fan art'].filter(Boolean).join(' ');
       searchQueries.push(seriesQuery);
+      if (s.series_name) relevanceHints.push(s.series_name);
 
       if (s.first_book_title) {
         const bookOneQuery = [s.first_book_title, s.author_name, 'fan art'].filter(Boolean).join(' ');
         searchQueries.push(bookOneQuery);
+        relevanceHints.push(s.first_book_title);
       }
     }
 
@@ -78,41 +83,76 @@ router.get('/deviantart', async (req, res) => {
       if (!searchQueries.length) return res.status(400).json({ error: 'Provide series_id, book_id, or query' });
     } else {
       searchQueries.push(searchText);
+      relevanceHints.push(stripFanArtSuffix(searchText));
     }
 
     const dedupedQueries = Array.from(new Set(searchQueries.map(q => q.trim()).filter(Boolean)));
-    const anchorPhrases = dedupedQueries
+    const anchorPhrases = Array.from(new Set(relevanceHints
       .map(stripFanArtSuffix)
       .map(v => String(v || '').trim())
-      .filter(v => v.length >= 6);
+      .filter(v => v.length >= 4)));
     const relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
+    const debug = {
+      queries: dedupedQueries,
+      anchor_phrases: anchorPhrases,
+      stage_counts: {
+        merged: 0,
+        unique_links: 0,
+        relevance_kept: 0,
+        relevance_rejected: 0,
+        live_kept: 0,
+        quality_rejected: 0,
+        time_rejected: 0,
+        ai_rejected: 0
+      }
+    };
     const merged = [];
     for (const query of dedupedQueries) {
       const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
       merged.push(...itemsForQuery.map(item => ({ ...item, query })));
       if (merged.length >= limit * 12) break;
     }
+    debug.stage_counts.merged = merged.length;
 
     const seen = new Set();
     const unique = [];
+    let relevanceRejected = 0;
     for (const item of merged) {
       if (seen.has(item.link)) continue;
       seen.add(item.link);
-      if (!passesRelevance(item, relevanceProfiles, anchorPhrases)) continue;
-      unique.push(item);
+      const relevance = evaluateRelevance(item, relevanceProfiles, anchorPhrases);
+      if (!relevance.pass) {
+        relevanceRejected++;
+        continue;
+      }
+      unique.push({ ...item, relevance_reason: relevance.reason });
       if (unique.length >= limit * 12) break;
     }
+    debug.stage_counts.unique_links = seen.size;
+    debug.stage_counts.relevance_kept = unique.length;
+    debug.stage_counts.relevance_rejected = relevanceRejected;
 
     const withLiveImages = [];
     const targetCandidatePool = Math.max(limit * 6, 24);
+    let qualityRejected = 0;
+    let timeRejected = 0;
     for (const item of unique) {
       const ok = await urlLooksLikeImage(item.image_url);
       if (!ok) continue;
-      if (!passesQualityFloor(item, minEdge)) continue;
-      if (!passesTimeWindow(item, timeWindow)) continue;
+      if (!passesQualityFloor(item, minEdge)) {
+        qualityRejected++;
+        continue;
+      }
+      if (!passesTimeWindow(item, timeWindow)) {
+        timeRejected++;
+        continue;
+      }
       withLiveImages.push(item);
       if (withLiveImages.length >= targetCandidatePool) break;
     }
+    debug.stage_counts.live_kept = withLiveImages.length;
+    debug.stage_counts.quality_rejected = qualityRejected;
+    debug.stage_counts.time_rejected = timeRejected;
 
     const canEnrich = Boolean(DEVIANTART_CLIENT_ID && DEVIANTART_CLIENT_SECRET);
     let enriched = withLiveImages;
@@ -147,7 +187,11 @@ router.get('/deviantart', async (req, res) => {
     }
 
     let filtered = enriched;
-    if (excludeAi) filtered = filtered.filter(item => !looksLikeAiArt(item));
+    if (excludeAi) {
+      const before = filtered.length;
+      filtered = filtered.filter(item => !looksLikeAiArt(item));
+      debug.stage_counts.ai_rejected = Math.max(0, before - filtered.length);
+    }
 
     const sorted = sortFanartItems(filtered, sortMode);
     const diversified = diversifyByCreator(sorted, limit, perCreatorCap);
@@ -165,6 +209,7 @@ router.get('/deviantart', async (req, res) => {
       count: diversified.length,
       metadata_enrichment: canEnrich,
       metadata_enrichment_reason: canEnrich ? null : 'Set DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET to enable engagement-based ranking',
+      debug,
       items: diversified
     });
   } catch (err) {
@@ -423,7 +468,6 @@ function diversifyByCreator(items, limit, perCreatorCap) {
   if (!Array.isArray(items) || !items.length) return [];
   const byCreator = new Map();
   const selected = [];
-  const overflow = [];
 
   for (const item of items) {
     const key = normalizeCreator(item.creator_key || item.creator);
@@ -432,20 +476,8 @@ function diversifyByCreator(items, limit, perCreatorCap) {
       selected.push(item);
       byCreator.set(key, count + 1);
       if (selected.length >= limit) return selected;
-    } else {
-      overflow.push(item);
     }
   }
-
-  // Soft fallback: avoid collapsing to too few results.
-  const minWanted = Math.min(limit, Math.max(6, Math.ceil(limit * 0.7)));
-  if (selected.length < minWanted) {
-    for (const item of overflow) {
-      selected.push(item);
-      if (selected.length >= limit) break;
-    }
-  }
-
   return selected;
 }
 
@@ -463,36 +495,46 @@ function deriveCreatorKey(creator, link) {
   return String(match[1] || '').toLowerCase();
 }
 
-function buildRelevanceProfile(query) {
-  const tokens = tokenize(query)
-    .filter(token => token.length >= 3)
-    .filter(token => !isNoiseToken(token));
-  const phrase = String(query || '').toLowerCase().replace(/\s+fan\s+art/g, '').trim();
-  return { query, tokens, phrase };
-}
-
-function passesRelevance(item, profiles, anchorPhrases) {
-  if (!profiles.length) return true;
-  const hay = normalizeSearchText([
+function evaluateRelevance(item, profiles, anchorPhrases) {
+  if (!profiles.length) return { pass: true, reason: 'no_profiles' };
+  const hayTitleTags = normalizeSearchText([
     item.title,
-    item.description_text,
-    ...(item.tags || [])
+    ...(item.tags || []),
+    item.creator
+  ].join(' '));
+  const hayDescription = normalizeSearchText([
+    item.description_text
   ].join(' '));
 
   // First, prefer direct phrase anchoring against the intended series/book strings.
   for (const anchor of (anchorPhrases || [])) {
     const normalizedAnchor = normalizeSearchText(anchor);
-    if (normalizedAnchor && hay.includes(normalizedAnchor)) return true;
+    if (!normalizedAnchor) continue;
+    if (hayTitleTags.includes(normalizedAnchor)) return { pass: true, reason: `anchor:${anchor}` };
   }
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
-    if (phrase && phrase.length >= 8 && hay.includes(phrase)) return true;
+    if (phrase && phrase.length >= 8 && hayTitleTags.includes(phrase)) {
+      return { pass: true, reason: `phrase:${profile.phrase}` };
+    }
 
-    const matches = profile.tokens.reduce((acc, token) => acc + (hay.includes(token) ? 1 : 0), 0);
-    if (matches >= 2) return true;
+    const matchesInTitleTags = profile.tokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
+    if (matchesInTitleTags >= 2) return { pass: true, reason: `title_tokens:${matchesInTitleTags}` };
+
+    // Description text is much noisier, so only trust it with stricter evidence.
+    const matchesInDescription = profile.tokens.reduce((acc, token) => acc + (hayDescription.includes(token) ? 1 : 0), 0);
+    const strongTokenMatch = profile.strongTokens.some(token => hayDescription.includes(token));
+    if (matchesInDescription >= 3 && strongTokenMatch) {
+      return { pass: true, reason: `desc_tokens:${matchesInDescription}` };
+    }
   }
-  return false;
+
+  // Hard negative guard for obvious non-fanart non-content items when relevance is weak.
+  const noisy = normalizeSearchText(`${item.title} ${item.description_text}`);
+  if (/\b(pdf|script|movie\s+review|review)\b/i.test(noisy)) return { pass: false, reason: 'noise_term' };
+
+  return { pass: false, reason: 'no_anchor_match' };
 }
 
 function tokenize(value) {
@@ -506,8 +548,18 @@ function normalizeSearchText(value) {
 function isNoiseToken(token) {
   return [
     'fan', 'art', 'series', 'book', 'books', 'review', 'movie', 'pdf',
-    'the', 'and', 'with', 'from', 'for', 'this', 'that', 'jordan', 'brandon'
+    'the', 'and', 'with', 'from', 'for', 'this', 'that', 'one', 'last',
+    'hosts', 'morning'
   ].includes(token);
+}
+
+function buildRelevanceProfile(query) {
+  const tokens = tokenize(query)
+    .filter(token => token.length >= 3)
+    .filter(token => !isNoiseToken(token));
+  const strongTokens = tokens.filter(token => token.length >= 5);
+  const phrase = String(query || '').toLowerCase().replace(/\s+fan\s+art/g, '').trim();
+  return { query, tokens, strongTokens, phrase };
 }
 
 function stripHtml(value) {

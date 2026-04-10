@@ -33,7 +33,8 @@ export default function SeriesView() {
     items: [],
     queries: [],
     metadataEnrichment: false,
-    metadataReason: null
+    metadataReason: null,
+    debug: null
   })
   const [fanartPrefs, setFanartPrefs] = useState(() => readFanartPrefs())
   const [fanartControls, setFanartControls] = useState({
@@ -94,7 +95,8 @@ export default function SeriesView() {
       items: [],
       queries: [],
       metadataEnrichment: false,
-      metadataReason: null
+      metadataReason: null,
+      debug: null
     })
     try {
       const params = new URLSearchParams({
@@ -116,7 +118,8 @@ export default function SeriesView() {
         items: data.items || [],
         queries: data.queries || [],
         metadataEnrichment: Boolean(data.metadata_enrichment),
-        metadataReason: data.metadata_enrichment_reason || null
+        metadataReason: data.metadata_enrichment_reason || null,
+        debug: data.debug || null
       })
     } catch (err) {
       setFanart({
@@ -125,7 +128,8 @@ export default function SeriesView() {
         items: [],
         queries: [],
         metadataEnrichment: false,
-        metadataReason: null
+        metadataReason: null,
+        debug: null
       })
     }
   }
@@ -311,6 +315,21 @@ export default function SeriesView() {
             {!fanart.metadataEnrichment && fanart.metadataReason ? ` — ${fanart.metadataReason}` : ''}
           </div>
         )}
+        {fanart.debug && (
+          <details style={{ marginBottom: 12 }}>
+            <summary style={{ cursor: 'pointer', color: '#9a9488', fontSize: 12 }}>Debug details</summary>
+            <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
+              <div>Merged candidates: {fanart.debug.stage_counts?.merged ?? 0}</div>
+              <div>Unique links: {fanart.debug.stage_counts?.unique_links ?? 0}</div>
+              <div>Kept by relevance: {fanart.debug.stage_counts?.relevance_kept ?? 0}</div>
+              <div>Rejected by relevance: {fanart.debug.stage_counts?.relevance_rejected ?? 0}</div>
+              <div>Kept after live + quality + time filters: {fanart.debug.stage_counts?.live_kept ?? 0}</div>
+              <div>Rejected by quality floor: {fanart.debug.stage_counts?.quality_rejected ?? 0}</div>
+              <div>Rejected by time window: {fanart.debug.stage_counts?.time_rejected ?? 0}</div>
+              <div>Rejected by AI filter: {fanart.debug.stage_counts?.ai_rejected ?? 0}</div>
+            </div>
+          </details>
+        )}
 
         {fanart.error && (
           <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{fanart.error}</div>
@@ -343,6 +362,12 @@ export default function SeriesView() {
                 <div style={{ padding: '8px 9px' }}>
                   <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
                   <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View on DeviantArt'}</div>
+                  <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
+                    source query: {item.query || 'n/a'}
+                  </div>
+                  <div style={{ color: '#6a6460', fontSize: 10 }}>
+                    relevance: {item.relevance_reason || 'n/a'}
+                  </div>
                   {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads) && (
                     <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
                       ❤ {item.stats?.favourites || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
