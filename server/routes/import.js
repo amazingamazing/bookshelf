@@ -5,6 +5,18 @@ const { pool } = require('../db');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
+// Strip series/subtitle cruft so "A Storm of Swords: A Song of Ice and Fire, Book 5"
+// normalizes to "A Storm of Swords" and matches the Goodreads-stored title.
+function normalizeTitle(title) {
+  return title
+    .replace(/\s*:\s*.+?,?\s*Book\s+[\d.]+.*/i, '') // "Title: Series Name, Book 3"
+    .replace(/\s*:\s*Book\s+[\d.]+.*/i, '')          // "Title: Book 3"
+    .replace(/[,]?\s*Book\s+[\d.]+\s*$/i, '')        // "Title, Book 3" at end
+    .replace(/\s*\([^)]*#[\d.]+[^)]*\)/g, '')        // "(Series Name, #3)"
+    .replace(/\s*\([^)]*(?:order)[^)]*\)/gi, '')     // "(Publication Order, #2)"
+    .trim();
+}
+
 // Helper: find or create author
 async function findOrCreateAuthor(client, name) {
   const trimmed = name?.trim();
@@ -72,6 +84,8 @@ router.post('/goodreads', upload.single('file'), async (req, res) => {
             seriesName = seriesMatch[2].trim();
             seriesOrder = seriesMatch[3] ? parseFloat(seriesMatch[3]) : 1;
           }
+          // Belt-and-suspenders: normalize any remaining subtitle cruft
+          cleanTitle = normalizeTitle(cleanTitle);
 
           const seriesId = authorId ? await findOrCreateSeries(client, seriesName, authorId) : null;
 
@@ -152,11 +166,15 @@ router.post('/audible', upload.single('file'), async (req, res) => {
           // Try to detect series from title
           let seriesName = (row['Series'] || row['series'] || '')?.trim() || null;
           let seriesOrder = row['Series Sequence'] ? parseFloat(row['Series Sequence']) : null;
-          let cleanTitle = title;
+
+          // Normalize first to strip "Title: Series Name, Book N" patterns,
+          // then try to pull series number out of what remains if no Series column
+          const normalizedTitle = normalizeTitle(title);
+          let cleanTitle = normalizedTitle;
 
           if (!seriesName) {
             const m = title.match(/^(.*?)\s*,?\s*Book\s+([\d.]+)/i);
-            if (m) { cleanTitle = m[1].trim(); }
+            if (m) { seriesOrder = parseFloat(m[2]); }
           }
 
           const seriesId = (seriesName && authorId)
