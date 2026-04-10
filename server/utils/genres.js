@@ -27,8 +27,12 @@ function expandTokens(seedLabels) {
   const labels = new Set(seedLabels.map(canonicalizeToken).filter(Boolean));
 
   for (const label of Array.from(labels)) {
-    // Keep "Sword & Sorcery" as one genre; split other ampersands.
-    if (label.includes('&') && normalized(label) !== normalized('Sword & Sorcery')) {
+    // Keep specific composite genres as one label; split other ampersands.
+    const keepCompositeAmpersand = new Set([
+      normalized('Sword & Sorcery'),
+      normalized('Action & Adventure')
+    ]);
+    if (label.includes('&') && !keepCompositeAmpersand.has(normalized(label))) {
       for (const part of label.split('&')) {
         const p = canonicalizeToken(part);
         if (p) labels.add(p);
@@ -84,8 +88,12 @@ function keepLabel(label) {
   if (!label || isNoise(label)) return false;
 
   const n = normalized(label);
-  // Drop most composite labels with comma/&; keep Sword & Sorcery.
-  if ((label.includes('&') || label.includes(',')) && n !== normalized('Sword & Sorcery')) return false;
+  // Drop most composite labels with comma/&; keep selected composite genres.
+  const keepComposite = new Set([
+    normalized('Sword & Sorcery'),
+    normalized('Action & Adventure')
+  ]);
+  if ((label.includes('&') || label.includes(',')) && !keepComposite.has(n)) return false;
 
   // Drop broad literature umbrella labels.
   const banned = new Set([
@@ -97,7 +105,7 @@ function keepLabel(label) {
   ]);
   if (banned.has(n)) return false;
 
-  if (n === normalized('Sword & Sorcery')) return true;
+  if (keepComposite.has(n)) return true;
 
   const roots = [
     'action', 'adventure', 'fantasy', 'science fiction', 'horror', 'mystery',

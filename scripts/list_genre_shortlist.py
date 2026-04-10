@@ -18,9 +18,12 @@ def normalized(value: str) -> str:
 def expand_labels(raw_labels):
     labels = set(raw_labels)
     for label in list(labels):
-        # Split "&" compounds (e.g., "Mystery & Thriller")
-        # Exception requested: keep "Sword & Sorcery" as a single genre.
-        if "&" in label and normalized(label) != normalized("Sword & Sorcery"):
+        # Split "&" compounds, except explicit composite genres we keep.
+        keep_ampersand = {
+            normalized("Sword & Sorcery"),
+            normalized("Action & Adventure"),
+        }
+        if "&" in label and normalized(label) not in keep_ampersand:
             for part in label.split("&"):
                 part = clean(part)
                 if part:
@@ -91,8 +94,12 @@ def keep_label(label):
         return False
 
     # Requested cleanup: remove most composite labels with commas/ampersands,
-    # except "Sword & Sorcery" which should be preserved.
-    if ("&" in label or "," in label) and normalized(label) != normalized("Sword & Sorcery"):
+    # except explicit composite genres to preserve.
+    keep_composite = {
+        normalized("Sword & Sorcery"),
+        normalized("Action & Adventure"),
+    }
+    if ("&" in label or "," in label) and normalized(label) not in keep_composite:
         return False
 
     # Requested cleanup: drop "literary / literature / fiction" umbrella labels.
@@ -121,7 +128,7 @@ def keep_label(label):
         "biography", "memoir", "nonfiction", "history", "science", "philosophy",
         "psychology", "business", "politics", "social sciences", "self-improvement"
     ]
-    return normalized(label) == normalized("Sword & Sorcery") or any(root in low for root in roots)
+    return normalized(label) in keep_composite or any(root in low for root in roots)
 
 
 def apply_plural_conflict_rule(labels):
