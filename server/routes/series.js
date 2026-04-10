@@ -5,13 +5,26 @@ const { pool } = require('../db');
 router.get('/', async (req, res) => {
   try {
     const { rows } = await pool.query(`
-      SELECT s.*, a.name as author_name,
-             COUNT(b.id) as book_count,
-             COUNT(CASE WHEN b.status='Read' THEN 1 END) as books_read
+      SELECT
+        s.id,
+        s.name,
+        s.author_id,
+        s.tier,
+        s.rating,
+        s.status,
+        s.notes,
+        COALESCE(
+          s.cover_url,
+          MAX(b.cover_url) FILTER (WHERE b.cover_url IS NOT NULL)
+        ) AS cover_url,
+        a.name AS author_name,
+        COUNT(b.id)::int AS book_count,
+        COUNT(CASE WHEN b.status='Read' THEN 1 END)::int AS books_read
       FROM series s
       LEFT JOIN authors a ON s.author_id = a.id
       LEFT JOIN books b ON b.series_id = s.id
-      GROUP BY s.id, a.name
+      GROUP BY
+        s.id, s.name, s.author_id, s.tier, s.rating, s.status, s.notes, s.cover_url, a.name
       ORDER BY s.tier, s.name
     `);
     res.json(rows);
@@ -24,8 +37,33 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { rows: [series] } = await pool.query(`
-      SELECT s.*, a.name as author_name
-      FROM series s LEFT JOIN authors a ON s.author_id = a.id
+      SELECT
+        s.id,
+        s.name,
+        s.author_id,
+        s.tier,
+        s.rating,
+        s.status,
+        s.notes,
+        COALESCE(
+          s.cover_url,
+          (
+            SELECT b2.cover_url
+            FROM books b2
+            WHERE b2.series_id = s.id AND b2.cover_url IS NOT NULL
+            ORDER BY b2.series_order NULLS LAST, b2.id
+            LIMIT 1
+          )
+        ) AS cover_url,
+        a.name AS author_name,
+        (
+          SELECT COUNT(*)::int FROM books bx WHERE bx.series_id = s.id
+        ) AS book_count,
+        (
+          SELECT COUNT(*)::int FROM books bx WHERE bx.series_id = s.id AND bx.status = 'Read'
+        ) AS books_read
+      FROM series s
+      LEFT JOIN authors a ON s.author_id = a.id
       WHERE s.id = $1
     `, [req.params.id]);
     if (!series) return res.status(404).json({ error: 'Not found' });

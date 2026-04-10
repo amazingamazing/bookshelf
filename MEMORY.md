@@ -8,7 +8,10 @@
 - Deployed on Render
 
 ## Current issues
-- [ ] cover import not working
+- [ ] covers not showing post import
+- [ ] how to handle adding covers not in open library
+- [ ] how to handle duplicate books already added
+- [ ] no series display option
 
 ## Key decisions
 - series are ranked not individual books
