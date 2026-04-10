@@ -5,7 +5,7 @@ export default function Import() {
   const [loading, setLoading] = useState(null)
   const [manualForm, setManualForm] = useState({ title: '', author: '', series: '', seriesOrder: '' })
   const [coverStats, setCoverStats] = useState({ total: 0, withCovers: 0, missing: 0 })
-  const [coverStatus, setCoverStatus] = useState('')
+  const [coverStatus, setCoverStatus] = useState(null)
 
   useEffect(() => {
     loadCoverStats()
@@ -85,21 +85,15 @@ export default function Import() {
 
   const handleFetchCovers = async () => {
     setLoading('covers')
-    setCoverStatus('Fetching covers...')
+    setCoverStatus({ state: 'loading' })
     try {
       const res = await fetch('/api/covers/fetch-missing', { method: 'POST' })
       const data = await res.json()
-      
       if (!res.ok) throw new Error(data.error || 'Failed to fetch covers')
-      
-      setCoverStatus(`✓ Found ${data.updated} covers (${data.remaining} remaining)`)
+      setCoverStatus({ state: 'done', ...data })
       await loadCoverStats()
-      
-      // Clear status after 4 seconds
-      setTimeout(() => setCoverStatus(''), 4000)
     } catch (err) {
-      setCoverStatus(`✗ Error: ${err.message}`)
-      setTimeout(() => setCoverStatus(''), 4000)
+      setCoverStatus({ state: 'error', message: err.message })
     } finally {
       setLoading(null)
     }
@@ -208,16 +202,52 @@ export default function Import() {
             >
               {loading === 'covers' ? 'Fetching...' : `Find Missing Covers (${coverStats.missing})`}
             </button>
-            {coverStatus && (
-              <div style={{ 
-                fontSize: 13, 
-                color: coverStatus.startsWith('✓') ? '#5cb85c' : '#e74c3c',
-                background: coverStatus.startsWith('✓') ? '#5cb85c11' : '#e74c3c11',
-                border: `1px solid ${coverStatus.startsWith('✓') ? '#5cb85c33' : '#e74c3c33'}`,
-                borderRadius: 6,
-                padding: '8px 12px'
-              }}>
-                {coverStatus}
+            {coverStatus && coverStatus.state === 'loading' && (
+              <div style={{ fontSize: 13, color: '#9a9488', padding: '8px 0' }}>
+                Searching Open Library for up to 50 books...
+              </div>
+            )}
+            {coverStatus && coverStatus.state === 'error' && (
+              <div style={{ fontSize: 13, color: '#e74c3c', background: '#e74c3c11', border: '1px solid #e74c3c33', borderRadius: 6, padding: '10px 12px' }}>
+                ✗ Error: {coverStatus.message}
+              </div>
+            )}
+            {coverStatus && coverStatus.state === 'done' && (
+              <div style={{ fontSize: 13, borderRadius: 6, overflow: 'hidden', border: '1px solid #2a2822' }}>
+                <div style={{ background: '#5cb85c11', borderBottom: coverStatus.notFound?.length || coverStatus.fetchErrors?.length ? '1px solid #2a2822' : 'none', padding: '10px 12px', color: '#5cb85c' }}>
+                  ✓ Found {coverStatus.updated} cover{coverStatus.updated !== 1 ? 's' : ''} out of {coverStatus.tried} tried — {coverStatus.remaining} still missing in library
+                </div>
+                {coverStatus.notFound?.length > 0 && (
+                  <details style={{ background: '#1a1814' }}>
+                    <summary style={{ padding: '8px 12px', cursor: 'pointer', color: '#e67e22', userSelect: 'none' }}>
+                      ⚠ {coverStatus.notFound.length} book{coverStatus.notFound.length !== 1 ? 's' : ''} not found on Open Library
+                    </summary>
+                    <div style={{ padding: '4px 12px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 220, overflowY: 'auto' }}>
+                      {coverStatus.notFound.map((b, i) => (
+                        <div key={i} style={{ padding: '5px 8px', background: '#0f0e0c', borderRadius: 4 }}>
+                          <span style={{ color: '#e8e4dc' }}>{b.title}</span>
+                          {b.author && <span style={{ color: '#9a9488' }}> — {b.author}</span>}
+                          <div style={{ color: '#6a6460', fontSize: 11, marginTop: 2 }}>{b.reason}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                {coverStatus.fetchErrors?.length > 0 && (
+                  <details style={{ background: '#1a1814', borderTop: '1px solid #2a2822' }}>
+                    <summary style={{ padding: '8px 12px', cursor: 'pointer', color: '#e74c3c', userSelect: 'none' }}>
+                      ✗ {coverStatus.fetchErrors.length} fetch error{coverStatus.fetchErrors.length !== 1 ? 's' : ''}
+                    </summary>
+                    <div style={{ padding: '4px 12px 10px', display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 160, overflowY: 'auto' }}>
+                      {coverStatus.fetchErrors.map((b, i) => (
+                        <div key={i} style={{ padding: '5px 8px', background: '#0f0e0c', borderRadius: 4 }}>
+                          <span style={{ color: '#e8e4dc' }}>{b.title}</span>
+                          <div style={{ color: '#e74c3c', fontSize: 11, marginTop: 2 }}>{b.error}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
               </div>
             )}
           </div>

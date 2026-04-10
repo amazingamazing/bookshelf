@@ -44,35 +44,54 @@ router.post('/fetch-missing', async (req, res) => {
     `);
 
     let updated = 0;
+    const notFound = [];
+    const fetchErrors = [];
+
     for (const book of rows) {
       try {
         let coverUrl = null;
+        let method = null;
+
         if (book.isbn) {
           const olRes = await fetch(`https://openlibrary.org/api/books?bibkeys=ISBN:${book.isbn}&format=json&jscmd=data`);
           const olData = await olRes.json();
           const bookData = olData[`ISBN:${book.isbn}`];
           coverUrl = bookData?.cover?.large || bookData?.cover?.medium || null;
+          if (coverUrl) method = 'isbn';
         }
+
         if (!coverUrl) {
           const q = encodeURIComponent(`${book.title} ${book.author || ''}`);
           const searchRes = await fetch(`https://openlibrary.org/search.json?q=${q}&limit=1&fields=cover_i`);
           const searchData = await searchRes.json();
           const doc = searchData.docs?.[0];
-          if (doc?.cover_i) coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
+          if (doc?.cover_i) {
+            coverUrl = `https://covers.openlibrary.org/b/id/${doc.cover_i}-L.jpg`;
+            method = book.isbn ? 'title_fallback' : 'title_only';
+          }
         }
+
         if (coverUrl) {
           await pool.query('UPDATE books SET cover_url=$1 WHERE id=$2', [coverUrl, book.id]);
           updated++;
+        } else {
+          notFound.push({
+            title: book.title,
+            author: book.author || null,
+            reason: book.isbn ? 'ISBN lookup and title search both returned no cover' : 'No ISBN — title search returned no cover'
+          });
         }
+
         // Rate limit: be kind to Open Library
         await new Promise(r => setTimeout(r, 200));
       } catch (e) {
-        // Skip failed books
+        fetchErrors.push({ title: book.title, error: e.message });
       }
     }
+
     const { rows: countRows } = await pool.query('SELECT COUNT(*) FROM books WHERE cover_url IS NULL');
     const remaining = parseInt(countRows[0].count);
-    res.json({ updated, remaining });
+    res.json({ updated, remaining, tried: rows.length, notFound, fetchErrors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
