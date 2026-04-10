@@ -7,9 +7,13 @@ export default function Import() {
   const [coverStats, setCoverStats] = useState({ total: 0, withCovers: 0, missing: 0 })
   const [coverStatus, setCoverStatus] = useState(null)
   const [resetStatus, setResetStatus] = useState(null)
+  const [dupes, setDupes] = useState({ groups: [], totalGroups: 0 })
+  const [dupeStatus, setDupeStatus] = useState(null)
+  const [dupeChoiceByGroup, setDupeChoiceByGroup] = useState({})
 
   useEffect(() => {
     loadCoverStats()
+    loadDuplicates()
   }, [])
 
   const loadCoverStats = async () => {
@@ -21,6 +25,27 @@ export default function Import() {
       setCoverStats({ total: books.length, withCovers, missing })
     } catch (e) {
       console.error('Failed to load cover stats:', e)
+    }
+  }
+
+  const loadDuplicates = async () => {
+    try {
+      const res = await fetch('/api/import/duplicates')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to load duplicates')
+      setDupes(data)
+      setDupeChoiceByGroup(prev => {
+        const next = { ...prev }
+        for (const g of data.groups || []) {
+          if (!next[g.key]) {
+            const withCover = g.books.find(b => b.cover_url)
+            next[g.key] = withCover?.id || g.books[0]?.id || null
+          }
+        }
+        return next
+      })
+    } catch (err) {
+      setDupeStatus({ state: 'error', message: err.message })
     }
   }
 
@@ -113,8 +138,41 @@ export default function Import() {
       setResults(null)
       setCoverStatus(null)
       await loadCoverStats()
+      await loadDuplicates()
     } catch (err) {
       setResetStatus({ state: 'error', message: err.message })
+    } finally {
+      setLoading(null)
+    }
+  }
+
+  const applyDuplicateChoice = async (group, merge) => {
+    const keepBookId = dupeChoiceByGroup[group.key]
+    if (!keepBookId) return
+    setLoading(`dupe-${group.key}`)
+    setDupeStatus({ state: 'loading', message: merge ? 'Merging duplicates...' : 'Applying cover choice...' })
+    try {
+      const res = await fetch('/api/import/duplicates/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          keepBookId,
+          bookIds: group.books.map(b => b.id),
+          merge
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to apply duplicate choice')
+      setDupeStatus({
+        state: 'done',
+        message: merge
+          ? `Merged group, removed ${data.deleted} duplicate book${data.deleted === 1 ? '' : 's'}.`
+          : 'Applied selected cover to this duplicate group.'
+      })
+      await loadCoverStats()
+      await loadDuplicates()
+    } catch (err) {
+      setDupeStatus({ state: 'error', message: err.message })
     } finally {
       setLoading(null)
     }
@@ -272,6 +330,119 @@ export default function Import() {
               </div>
             )}
           </div>
+        </Section>
+      </SectionGroup>
+
+      <SectionGroup title="🧩 Duplicate Review" description="Review likely duplicate books, choose a preferred cover, and optionally merge extras.">
+        <Section
+          title="Possible Duplicates"
+          icon="🔎"
+          description={dupes.totalGroups > 0
+            ? `${dupes.totalGroups} duplicate group${dupes.totalGroups === 1 ? '' : 's'} found`
+            : 'No likely duplicates found right now.'}
+        >
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+            <button
+              onClick={loadDuplicates}
+              disabled={loading === 'dupes-refresh'}
+              style={btnStyle}
+            >
+              Refresh Duplicate Scan
+            </button>
+          </div>
+
+          {dupeStatus?.state === 'loading' && (
+            <div style={{ marginBottom: 10, fontSize: 13, color: '#9a9488' }}>{dupeStatus.message}</div>
+          )}
+          {dupeStatus?.state === 'error' && (
+            <div style={{ marginBottom: 10, fontSize: 13, color: '#e74c3c' }}>✗ {dupeStatus.message}</div>
+          )}
+          {dupeStatus?.state === 'done' && (
+            <div style={{ marginBottom: 10, fontSize: 13, color: '#5cb85c' }}>✓ {dupeStatus.message}</div>
+          )}
+
+          {dupes.totalGroups === 0 ? (
+            <div style={{ color: '#9a9488', fontSize: 13 }}>Nothing to review here yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxHeight: 700, overflowY: 'auto', paddingRight: 4 }}>
+              {dupes.groups.map(group => (
+                <div key={group.key} style={{ background: '#0f0e0c', border: '1px solid #2a2822', borderRadius: 8, padding: 12 }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ color: '#e8e4dc', fontSize: 14, fontWeight: 600 }}>{group.display_title}</div>
+                    <div style={{ color: '#9a9488', fontSize: 12 }}>
+                      {group.display_author} - {group.count} duplicates
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
+                    {group.books.map(book => {
+                      const selected = dupeChoiceByGroup[group.key] === book.id
+                      return (
+                        <button
+                          key={book.id}
+                          type="button"
+                          onClick={() => setDupeChoiceByGroup(prev => ({ ...prev, [group.key]: book.id }))}
+                          style={{
+                            textAlign: 'left',
+                            background: selected ? '#6ea8fe12' : '#1a1814',
+                            border: `1px solid ${selected ? '#6ea8fe55' : '#2a2822'}`,
+                            borderRadius: 8,
+                            padding: 8,
+                            cursor: 'pointer',
+                            color: '#e8e4dc'
+                          }}
+                        >
+                          <div style={{ display: 'flex', gap: 8 }}>
+                            <div style={{
+                              width: 42,
+                              height: 62,
+                              background: '#2a2822',
+                              borderRadius: 4,
+                              overflow: 'hidden',
+                              flexShrink: 0
+                            }}>
+                              {book.cover_url
+                                ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: 11 }}>No cover</div>}
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: selected ? '#6ea8fe' : '#e8e4dc' }}>
+                                {selected ? '✓ Keep this cover' : 'Use this cover'}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#9a9488', marginTop: 2 }}>id #{book.id} - {book.source}</div>
+                              <div style={{ fontSize: 11, color: '#9a9488' }}>
+                                {book.series_name ? `${book.series_name}${book.series_order ? ` #${book.series_order}` : ''}` : 'No series'}
+                              </div>
+                              <div style={{ fontSize: 11, color: '#9a9488' }}>
+                                {book.goodreads_id ? 'GR' : '-'} / {book.audible_asin ? 'Audible' : '-'}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={() => applyDuplicateChoice(group, false)}
+                      disabled={loading === `dupe-${group.key}`}
+                      style={btnStyle}
+                    >
+                      {loading === `dupe-${group.key}` ? 'Applying...' : 'Apply Cover Choice'}
+                    </button>
+                    <button
+                      onClick={() => applyDuplicateChoice(group, true)}
+                      disabled={loading === `dupe-${group.key}`}
+                      style={{ ...btnStyle, background: '#e67e2218', border: '1px solid #e67e2244', color: '#e67e22' }}
+                    >
+                      {loading === `dupe-${group.key}` ? 'Merging...' : 'Apply + Merge Duplicates'}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Section>
       </SectionGroup>
 

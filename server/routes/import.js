@@ -100,6 +100,22 @@ function parseAudibleSeries(row, title) {
   return { seriesName, seriesOrder };
 }
 
+function canonicalTitleKey(title) {
+  return normalizeTitle(title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function canonicalAuthorKey(author) {
+  return (author || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 // Helper: find or create author
 async function findOrCreateAuthor(client, name) {
   const trimmed = name?.trim();
@@ -147,6 +163,147 @@ router.post('/reset-all', async (_req, res) => {
     await client.query('TRUNCATE TABLE reading_queue, books, series, authors RESTART IDENTITY CASCADE');
     await client.query('COMMIT');
     res.json({ success: true, deleted: beforeRows[0] });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    res.status(500).json({ error: err.message });
+  } finally {
+    client.release();
+  }
+});
+
+// Find likely duplicate books (same normalized title + author)
+router.get('/duplicates', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        b.id, b.title, b.author_id, b.series_id, b.series_order, b.cover_url,
+        b.status, b.source, b.goodreads_id, b.audible_asin, b.isbn,
+        b.published_date, b.date_read, b.created_at,
+        a.name AS author_name,
+        s.name AS series_name
+      FROM books b
+      LEFT JOIN authors a ON a.id = b.author_id
+      LEFT JOIN series s ON s.id = b.series_id
+      ORDER BY a.name NULLS LAST, b.title, b.id
+    `);
+
+    const groupsByKey = new Map();
+    for (const book of rows) {
+      const titleKey = canonicalTitleKey(book.title);
+      const authorKey = canonicalAuthorKey(book.author_name);
+      if (!titleKey) continue;
+      const key = `${authorKey}::${titleKey}`;
+      if (!groupsByKey.has(key)) {
+        groupsByKey.set(key, {
+          key,
+          canonical_title: titleKey,
+          canonical_author: authorKey,
+          display_title: book.title,
+          display_author: book.author_name || 'Unknown',
+          books: []
+        });
+      }
+      groupsByKey.get(key).books.push(book);
+    }
+
+    const groups = Array.from(groupsByKey.values())
+      .filter(g => g.books.length > 1)
+      .map(g => ({
+        ...g,
+        count: g.books.length,
+        books: g.books.sort((a, b) => {
+          // Prefer entries with richer external IDs and covers at top.
+          const score = (x) =>
+            (x.cover_url ? 3 : 0) +
+            (x.goodreads_id ? 2 : 0) +
+            (x.audible_asin ? 2 : 0) +
+            (x.series_id ? 1 : 0);
+          const diff = score(b) - score(a);
+          if (diff !== 0) return diff;
+          return new Date(a.created_at) - new Date(b.created_at);
+        })
+      }))
+      .sort((a, b) => b.count - a.count || a.display_title.localeCompare(b.display_title));
+
+    res.json({ groups, totalGroups: groups.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Apply selected cover across a duplicate group, optionally merge/delete extras.
+router.post('/duplicates/apply', async (req, res) => {
+  const { keepBookId, bookIds, merge = false } = req.body || {};
+  const keepId = Number(keepBookId);
+  const ids = Array.isArray(bookIds) ? bookIds.map(Number).filter(Number.isFinite) : [];
+
+  if (!Number.isFinite(keepId) || ids.length < 2 || !ids.includes(keepId)) {
+    return res.status(400).json({ error: 'Invalid payload. Provide keepBookId and at least 2 bookIds including keepBookId.' });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT id, cover_url, goodreads_id, audible_asin, isbn, published_date, date_read,
+              series_id, series_order, page_count, rating
+       FROM books
+       WHERE id = ANY($1::int[])`,
+      [ids]
+    );
+    if (rows.length !== ids.length) {
+      throw new Error('Some selected book IDs were not found.');
+    }
+
+    const keep = rows.find(r => r.id === keepId);
+    const others = rows.filter(r => r.id !== keepId);
+    const selectedCover = keep.cover_url || others.find(r => r.cover_url)?.cover_url || null;
+
+    await client.query(
+      'UPDATE books SET cover_url=$1 WHERE id = ANY($2::int[])',
+      [selectedCover, ids]
+    );
+
+    const pick = (field) => keep[field] || others.find(r => r[field])?.[field] || null;
+    await client.query(
+      `UPDATE books
+       SET goodreads_id=COALESCE(goodreads_id,$1),
+           audible_asin=COALESCE(audible_asin,$2),
+           isbn=COALESCE(isbn,$3),
+           published_date=COALESCE(published_date,$4),
+           date_read=COALESCE(date_read,$5),
+           series_id=COALESCE(series_id,$6),
+           series_order=COALESCE(series_order,$7),
+           page_count=COALESCE(page_count,$8),
+           rating=COALESCE(rating,$9)
+       WHERE id=$10`,
+      [
+        pick('goodreads_id'),
+        pick('audible_asin'),
+        pick('isbn'),
+        pick('published_date'),
+        pick('date_read'),
+        pick('series_id'),
+        pick('series_order'),
+        pick('page_count'),
+        pick('rating'),
+        keepId
+      ]
+    );
+
+    let deleted = 0;
+    if (merge) {
+      const removeIds = others.map(r => r.id);
+      if (removeIds.length) {
+        await client.query('UPDATE reading_queue SET book_id=$1 WHERE book_id = ANY($2::int[])', [keepId, removeIds]);
+        const del = await client.query('DELETE FROM books WHERE id = ANY($1::int[])', [removeIds]);
+        deleted = del.rowCount;
+      }
+    }
+
+    await client.query('COMMIT');
+    res.json({ success: true, kept: keepId, merged: !!merge, deleted, cover_url: selectedCover });
   } catch (err) {
     await client.query('ROLLBACK');
     res.status(500).json({ error: err.message });
