@@ -10,6 +10,8 @@ export default function Bookshelf() {
   const [view, setView] = useState('books') // 'series' | 'books'
   const [zoom, setZoom] = useState(1)
   const [filter, setFilter] = useState({ tier: 'all', status: 'all', search: '' })
+  const [sortBy, setSortBy] = useState('title')
+  const [sortDir, setSortDir] = useState('asc')
   const [expandedSeriesId, setExpandedSeriesId] = useState(null)
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -52,6 +54,14 @@ export default function Bookshelf() {
   }
 
   const normalizeKeyPart = (value) => (value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+  const normalizeText = (value) => (value || '').toString().toLowerCase().trim()
+  const compareText = (a, b) => normalizeText(a).localeCompare(normalizeText(b))
+  const dateToTs = (raw) => {
+    if (!raw) return null
+    const normalized = String(raw).trim().replace(/\//g, '-')
+    const ts = Date.parse(normalized)
+    return Number.isNaN(ts) ? null : ts
+  }
 
   const seriesById = series.reduce((acc, s) => {
     acc[s.id] = s
@@ -97,6 +107,7 @@ export default function Bookshelf() {
       const booksRead = g.books.filter(b => normalizeStatus(b.status) === 'Read').length
       return {
         id: g.openSeriesId || `group-${idx}-${g.key}`,
+        title: g.name,
         name: g.name,
         author_name: g.author_name,
         tier: g.tier || 'Unranked',
@@ -104,6 +115,23 @@ export default function Bookshelf() {
         cover_url: g.cover_url,
         book_count: g.books.length,
         books_read: booksRead,
+        series_title: g.name,
+        series_length_read: booksRead,
+        first_read_date: (() => {
+          const readDates = g.books.map(b => dateToTs(b.date_read)).filter(Boolean)
+          if (!readDates.length) return null
+          return new Date(Math.min(...readDates)).toISOString()
+        })(),
+        last_read_date: (() => {
+          const readDates = g.books.map(b => dateToTs(b.date_read)).filter(Boolean)
+          if (!readDates.length) return null
+          return new Date(Math.max(...readDates)).toISOString()
+        })(),
+        publication_date: (() => {
+          const pubDates = g.books.map(b => dateToTs(b.published_date)).filter(Boolean)
+          if (!pubDates.length) return null
+          return new Date(Math.min(...pubDates)).toISOString()
+        })(),
         openSeriesId: g.openSeriesId,
         books: g.books
       }
@@ -154,6 +182,78 @@ export default function Bookshelf() {
     return true
   })
 
+  const readCountBySeriesName = books.reduce((acc, b) => {
+    const inferred = inferSeriesFromTitle(b.title)
+    const name = (b.series_name || inferred?.name || '').trim()
+    const key = `${normalizeKeyPart(b.author_name || '')}::${normalizeKeyPart(name)}`
+    if (!name) return acc
+    if (!acc[key]) acc[key] = 0
+    if (normalizeStatus(b.status) === 'Read') acc[key] += 1
+    return acc
+  }, {})
+
+  const booksWithSortFields = filteredBooks.map(b => {
+    const inferred = inferSeriesFromTitle(b.title)
+    const seriesTitle = (b.series_name || inferred?.name || '').trim()
+    const seriesKey = `${normalizeKeyPart(b.author_name || '')}::${normalizeKeyPart(seriesTitle)}`
+    return {
+      ...b,
+      series_title: seriesTitle,
+      series_length_read: readCountBySeriesName[seriesKey] || (normalizeStatus(b.status) === 'Read' ? 1 : 0),
+      publication_date: b.published_date || null,
+      first_read_date: b.date_read || null,
+      last_read_date: b.date_read || null
+    }
+  })
+
+  const getSortValue = (item) => {
+    switch (sortBy) {
+      case 'author':
+        return item.author_name || ''
+      case 'series_title':
+        return item.series_title || item.series_name || ''
+      case 'series_length':
+        return Number(item.series_length_read || item.books_read || 0)
+      case 'publication_date':
+        return dateToTs(item.publication_date || item.published_date)
+      case 'last_read_date':
+        return dateToTs(item.last_read_date || item.date_read)
+      case 'first_read_date':
+        return dateToTs(item.first_read_date || item.date_read)
+      case 'title':
+      default:
+        return item.title || item.name || ''
+    }
+  }
+
+  const sortItems = (items) => {
+    return [...items].sort((a, b) => {
+      const av = getSortValue(a)
+      const bv = getSortValue(b)
+      let cmp = 0
+
+      const aMissing = av == null || av === ''
+      const bMissing = bv == null || bv === ''
+      if (aMissing && bMissing) cmp = 0
+      else if (aMissing) cmp = 1
+      else if (bMissing) cmp = -1
+
+      else if (typeof av === 'number' || typeof bv === 'number' || sortBy.includes('date') || sortBy === 'series_length') {
+        const an = av == null ? Number.NEGATIVE_INFINITY : Number(av)
+        const bn = bv == null ? Number.NEGATIVE_INFINITY : Number(bv)
+        cmp = an === bn ? 0 : an > bn ? 1 : -1
+      } else {
+        cmp = compareText(av, bv)
+      }
+
+      if (cmp === 0) cmp = compareText(a.title || a.name, b.title || b.name)
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+  }
+
+  const sortedBooks = sortItems(booksWithSortFields)
+  const sortedSeries = sortItems(filteredSeries)
+
   const coverSize = Math.round(120 * zoom)
 
   if (loading) return <div style={{ padding: 48, color: '#9a9488', textAlign: 'center' }}>Loading your shelf...</div>
@@ -175,6 +275,19 @@ export default function Bookshelf() {
         <select value={filter.status} onChange={e => setFilter(f => ({ ...f, status: e.target.value }))} style={selectStyle}>
           <option value="all">All status</option>
           {['Read','Currently Reading','Want to Read','Dropped'].map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={selectStyle}>
+          <option value="title">Sort: Title</option>
+          <option value="author">Sort: Author</option>
+          <option value="series_title">Sort: Series title</option>
+          <option value="series_length">Sort: Series length (read)</option>
+          <option value="publication_date">Sort: Publication/release date</option>
+          <option value="last_read_date">Sort: Last read date</option>
+          <option value="first_read_date">Sort: First read date</option>
+        </select>
+        <select value={sortDir} onChange={e => setSortDir(e.target.value)} style={selectStyle}>
+          <option value="asc">Asc</option>
+          <option value="desc">Desc</option>
         </select>
         <div style={{ display: 'flex', gap: 6, background: '#1a1814', border: '1px solid #2a2822', borderRadius: 8, padding: 4 }}>
           <button onClick={() => setView('books')} style={view === 'books' ? activeToggle : inactiveToggle}>Books</button>
@@ -200,7 +313,7 @@ export default function Bookshelf() {
       </div>
 
       {/* Cover grid */}
-      {(view === 'series' ? filteredSeries.length : filteredBooks.length) === 0 ? (
+      {(view === 'series' ? sortedSeries.length : sortedBooks.length) === 0 ? (
         <div style={{ textAlign: 'center', padding: '80px 0', color: '#9a9488' }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>📚</div>
           <div style={{ fontSize: 18, marginBottom: 8 }}>No books match this filter</div>
@@ -213,9 +326,9 @@ export default function Bookshelf() {
         <div style={{
           display: 'flex', flexWrap: 'wrap', gap: zoom < 0.75 ? 6 : 12
         }}>
-          {view === 'books' ? filteredBooks.map(b => (
+          {view === 'books' ? sortedBooks.map(b => (
             <BookCard key={b.id} book={b} size={coverSize} onClick={() => b.series_id && navigate(`/series/${b.series_id}`)} />
-          )) : filteredSeries.map(s => (
+          )) : sortedSeries.map(s => (
             <SeriesStackCard
               key={s.id}
               series={s}
