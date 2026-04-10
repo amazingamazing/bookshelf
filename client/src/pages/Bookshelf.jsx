@@ -431,14 +431,25 @@ function BookCard({ book, size, onClick }) {
 
 function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, onOpen }) {
   const [imgErr, setImgErr] = useState(false)
+  const [hoveredBookId, setHoveredBookId] = useState(null)
   const tierColor = TIER_COLORS[series.tier] || '#555'
   const readCount = Number(series.books_read || 0)
   const totalCount = Number(series.book_count || books.length || 0)
   const stackable = readCount > 1
   const stackDepth = stackable ? Math.min(4, Math.max(2, Math.ceil(totalCount / 2))) : 1
   const sortedBooks = [...books].sort((a, b) => (a.series_order || 9999) - (b.series_order || 9999))
-  const fanBooks = sortedBooks.slice(0, 5)
+  const fanBooks = sortedBooks
   const primaryCover = series.cover_url || sortedBooks.find(b => b.cover_url)?.cover_url
+  const seriesHeight = Math.round(size * 1.5)
+  const fanCount = fanBooks.length
+  const fanAreaWidth = Math.min(Math.max(size * 3, size + 140), 620)
+  const slotSpacing = fanCount > 1 ? fanAreaWidth / (fanCount - 1) : fanAreaWidth
+  const targetFanWidth = Math.round(size * 0.75) // around 3/4 of series card width
+  const fanWidth = Math.max(16, Math.min(targetFanWidth, Math.round(slotSpacing * 0.9)))
+  const fanHeight = Math.round(fanWidth * 1.5)
+  const targetHoverHeight = Math.round(seriesHeight * 1.3)
+  const hoverScale = fanHeight > 0 ? targetHoverHeight / fanHeight : 1
+  const fanReserveSpace = expanded && stackable && fanCount > 0 ? Math.max(targetHoverHeight + 30, fanHeight + 30) : 0
 
   const handleCardClick = () => {
     if (!stackable) {
@@ -456,11 +467,13 @@ function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, 
     <div title={`${series.name} by ${series.author_name || 'Unknown'}`}
       style={{
         width: size, cursor: 'pointer', position: 'relative',
-        transition: 'transform 0.15s', borderRadius: 6, overflow: 'visible'
+        transition: 'transform 0.15s', borderRadius: 6, overflow: 'visible',
+        marginBottom: fanReserveSpace
       }}
       onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-4px) scale(1.02)'}
       onMouseLeave={e => {
         e.currentTarget.style.transform = 'none'
+        setHoveredBookId(null)
         if (expanded) onCollapse()
       }}
     >
@@ -545,33 +558,76 @@ function SeriesStackCard({ series, books, size, expanded, onExpand, onCollapse, 
       {/* Fan out preview */}
       {expanded && stackable && fanBooks.length > 0 && (
         <div style={{
-          position: 'absolute', top: Math.round(size * 1.5) + 8, left: -4,
-          width: size + 64, height: 88, zIndex: 60
+          position: 'absolute',
+          top: seriesHeight + 10,
+          left: Math.round((size - fanAreaWidth) / 2),
+          width: fanAreaWidth,
+          height: Math.max(targetHoverHeight + 10, fanHeight + 10),
+          zIndex: 70
         }}>
           {fanBooks.map((book, idx) => {
             const spread = fanBooks.length === 1 ? 0 : idx / (fanBooks.length - 1)
-            const left = Math.round(spread * Math.min(size - 24, 96))
+            const left = Math.round(spread * Math.max(0, fanAreaWidth - fanWidth))
             const rotate = -12 + spread * 24
+            const isHovered = hoveredBookId === book.id
             return (
               <div key={book.id} style={{
                 position: 'absolute',
                 left,
-                top: Math.abs(rotate) * 0.4,
-                width: 42,
-                height: 64,
+                top: Math.max(0, Math.round((Math.abs(rotate) / 14) * 10)),
+                width: fanWidth,
+                height: fanHeight,
                 borderRadius: 4,
                 overflow: 'hidden',
                 border: '1px solid #3a3830',
                 boxShadow: '0 5px 16px rgba(0,0,0,0.45)',
-                transform: `rotate(${rotate}deg)`,
-                background: '#1a1814'
-              }}>
-                {book.cover_url
-                  ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                  : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9a9488', fontSize: 10 }}>📖</div>}
+                transform: isHovered
+                  ? `translateY(-${Math.round(seriesHeight * 0.18)}px) rotate(${rotate}deg) scale(${hoverScale})`
+                  : `rotate(${rotate}deg)`,
+                transformOrigin: 'bottom center',
+                transition: 'transform 0.16s ease, box-shadow 0.16s ease',
+                background: '#1a1814',
+                zIndex: isHovered ? 200 : idx + 1
+              }}
+              onMouseEnter={() => setHoveredBookId(book.id)}
+              onMouseLeave={() => setHoveredBookId(null)}
+              title={book.title}
+              >
+                <div style={{
+                  position: 'absolute',
+                  top: 2,
+                  right: 2,
+                  zIndex: 2,
+                  fontSize: 9,
+                  color: '#e8e4dc',
+                  background: 'rgba(0,0,0,0.55)',
+                  borderRadius: 3,
+                  padding: '1px 3px'
+                }}>
+                  {book.series_order || idx + 1}
+                </div>
+                <div style={{ width: '100%', height: '100%' }}>
+                  {book.cover_url
+                    ? <img src={book.cover_url} alt={book.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    : <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#9a9488', fontSize: 10 }}>📖</div>}
+                </div>
               </div>
             )
           })}
+        </div>
+      )}
+
+      {expanded && stackable && fanBooks.length > 0 && (
+        <div style={{
+          position: 'absolute',
+          top: seriesHeight + Math.max(targetHoverHeight, fanHeight) + 14,
+          left: Math.round((size - fanAreaWidth) / 2),
+          width: fanAreaWidth,
+          fontSize: 11,
+          color: '#9a9488',
+          textAlign: 'center'
+        }}>
+          Hover a book to preview larger
         </div>
       )}
 
