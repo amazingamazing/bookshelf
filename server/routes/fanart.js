@@ -495,7 +495,10 @@ function deriveCreatorKey(creator, link) {
   if (fromCreator && fromCreator !== '__unknown_creator__') return fromCreator;
   const str = String(link || '');
   const match = str.match(/https?:\/\/([a-z0-9-]+)\.deviantart\.com/i);
-  if (match) return String(match[1] || '').toLowerCase();
+  if (match) {
+    const subdomain = String(match[1] || '').toLowerCase();
+    if (subdomain && subdomain !== 'www') return subdomain;
+  }
   const pathMatch = str.match(/https?:\/\/(?:www\.)?deviantart\.com\/([a-z0-9-]+)\//i);
   if (pathMatch) return String(pathMatch[1] || '').toLowerCase();
   return '__unknown_creator__';
@@ -514,6 +517,10 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
   const hayDescription = normalizeSearchText([
     item.description_text
   ].join(' '));
+  const anchorTokens = tokenize((anchorPhrases || []).join(' '))
+    .filter(token => token.length >= 4)
+    .filter(token => !isNoiseToken(token));
+  const anchorTokenHitCount = anchorTokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
 
   // First, prefer direct phrase anchoring against the intended series/book strings.
   for (const anchor of (anchorPhrases || [])) {
@@ -521,6 +528,9 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
     if (!normalizedAnchor) continue;
     if (hayTitleTags.includes(normalizedAnchor)) return { pass: true, reason: `anchor:${anchor}` };
   }
+
+  // Guardrail: require at least some anchor signal in title/tags/creator.
+  if (anchorTokenHitCount < 2) return { pass: false, reason: 'anchor_token_miss' };
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
@@ -530,14 +540,14 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
 
     const matchesInTitleTags = profile.tokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
     if (matchesInTitleTags >= 2) return { pass: true, reason: `title_tokens:${matchesInTitleTags}` };
-
-    // Description text is much noisier, so only trust it with stricter evidence.
-    const matchesInDescription = profile.tokens.reduce((acc, token) => acc + (hayDescription.includes(token) ? 1 : 0), 0);
-    const strongTokenMatch = profile.strongTokens.some(token => hayDescription.includes(token));
-    if (matchesInDescription >= 3 && strongTokenMatch) {
-      return { pass: true, reason: `desc_tokens:${matchesInDescription}` };
-    }
   }
+
+  // Description text is noisy, so only allow it as secondary signal once anchors already matched.
+  const descMatches = profiles.reduce((best, profile) => {
+    const matches = profile.tokens.reduce((acc, token) => acc + (hayDescription.includes(token) ? 1 : 0), 0);
+    return Math.max(best, matches);
+  }, 0);
+  if (descMatches >= 4) return { pass: true, reason: `desc_tokens:${descMatches}` };
 
   return { pass: false, reason: 'no_anchor_match' };
 }
