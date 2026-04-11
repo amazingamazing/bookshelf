@@ -8,6 +8,7 @@ const TIER_COLORS = { S: '#f4c542', A: '#6ea8fe', B: '#5cb85c', C: '#e67e22', D:
 const FADE_MS = 1500
 const OVERLAY_HIDE_MS = 3000
 const RIGHT_LANE_START_DELAY_MS = 1000
+const MOSAIC_SHIFT_MS = 3200
 
 function readFanartPrefs() {
   try {
@@ -107,6 +108,8 @@ export default function ShelfCinema({ onExit }) {
   const leftTimerRef = useRef(null)
   const rightTimerRef = useRef(null)
   const rightStartRef = useRef(null)
+  const mosaicTimerRef = useRef(null)
+  const mosaicSwitchTickRef = useRef(0)
   const leftFadeRef = useRef(null)
   const rightFadeRef = useRef(null)
   const prefetchingRef = useRef(false)
@@ -132,10 +135,12 @@ export default function ShelfCinema({ onExit }) {
   const [rightPrevious, setRightPrevious] = useState(null)
   const [leftIndex, setLeftIndex] = useState(0)
   const [rightIndex, setRightIndex] = useState(-1)
+  const [mosaicOffset, setMosaicOffset] = useState(0)
 
   nextPackRef.current = nextPack
   currentPackRef.current = currentPack
-  const useDualLane = viewport.width >= 1180 && viewport.width > viewport.height
+  const viewMode = cinemaControls.viewMode || 'cinema'
+  const useDualLane = viewMode === 'cinema' && viewport.width >= 1180 && viewport.width > viewport.height
 
   const clearTimer = (timerRef) => {
     if (timerRef.current) {
@@ -149,6 +154,7 @@ export default function ShelfCinema({ onExit }) {
     clearTimer(leftTimerRef)
     clearTimer(rightTimerRef)
     clearTimer(rightStartRef)
+    clearTimer(mosaicTimerRef)
     clearTimer(leftFadeRef)
     clearTimer(rightFadeRef)
   }, [])
@@ -278,6 +284,8 @@ export default function ShelfCinema({ onExit }) {
       setRightCurrent(null)
       setLeftIndex(0)
       setRightIndex(-1)
+      setMosaicOffset(0)
+      mosaicSwitchTickRef.current = 0
       cursorRef.current = 0
 
       const left = pullNextImage() || { image: pack.images[0], index: 0 }
@@ -400,17 +408,19 @@ export default function ShelfCinema({ onExit }) {
 
   useEffect(() => {
     if (!leftCurrent) return
+    if (viewMode === 'mosaic') return
     clearTimer(leftTimerRef)
     leftTimerRef.current = setTimeout(() => advanceLane('left'), leftCurrent.durationMs)
     return () => clearTimer(leftTimerRef)
-  }, [advanceLane, leftCurrent])
+  }, [advanceLane, leftCurrent, viewMode])
 
   useEffect(() => {
     if (!useDualLane || !rightCurrent) return
+    if (viewMode === 'mosaic') return
     clearTimer(rightTimerRef)
     rightTimerRef.current = setTimeout(() => advanceLane('right'), rightCurrent.durationMs)
     return () => clearTimer(rightTimerRef)
-  }, [advanceLane, rightCurrent, useDualLane])
+  }, [advanceLane, rightCurrent, useDualLane, viewMode])
 
   useEffect(() => {
     if (!currentPack) return
@@ -432,17 +442,64 @@ export default function ShelfCinema({ onExit }) {
         updateLaneVisual('right', right.image, right.index)
       }, RIGHT_LANE_START_DELAY_MS)
     }
-  }, [useDualLane]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [useDualLane, viewMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (viewMode !== 'mosaic') return
+    if (!currentPack?.images?.length) return
+    clearTimer(mosaicTimerRef)
+    mosaicTimerRef.current = setTimeout(async () => {
+      setMosaicOffset(prev => prev + 1)
+      mosaicSwitchTickRef.current += 1
+      if (mosaicSwitchTickRef.current >= Math.max(6, currentPack.images.length)) {
+        mosaicSwitchTickRef.current = 0
+        await switchToNextPack()
+      }
+    }, MOSAIC_SHIFT_MS)
+    return () => clearTimer(mosaicTimerRef)
+  }, [currentPack, mosaicOffset, switchToNextPack, viewMode])
 
   const activeImage = useMemo(() => {
+    if (viewMode === 'mosaic') {
+      const images = currentPack?.images || []
+      if (!images.length) return null
+      const index = mosaicOffset % images.length
+      return images[index]
+    }
     if (!useDualLane) return leftCurrent?.image || null
     return rightCurrent?.image || leftCurrent?.image || null
-  }, [leftCurrent, rightCurrent, useDualLane])
+  }, [currentPack, leftCurrent, mosaicOffset, rightCurrent, useDualLane, viewMode])
 
   const dotActiveIndexes = useMemo(() => {
+    if (viewMode === 'mosaic') {
+      const images = currentPack?.images || []
+      if (!images.length) return []
+      return [mosaicOffset % images.length]
+    }
     if (!useDualLane) return [leftIndex]
     return [leftIndex, rightIndex].filter(v => v >= 0)
-  }, [leftIndex, rightIndex, useDualLane])
+  }, [currentPack, leftIndex, mosaicOffset, rightIndex, useDualLane, viewMode])
+
+  const mosaicTiles = useMemo(() => {
+    if (viewMode !== 'mosaic') return []
+    const images = currentPack?.images || []
+    if (!images.length) return []
+    const isWide = viewport.width > viewport.height
+    const cols = isWide ? 6 : 4
+    const rows = isWide ? 3 : 5
+    const count = cols * rows
+    const tiles = []
+    for (let i = 0; i < count; i += 1) {
+      const idx = (mosaicOffset + i) % images.length
+      const image = images[idx]
+      tiles.push({
+        image,
+        idx,
+        key: `${image.url}-${i}-${mosaicOffset}`
+      })
+    }
+    return { tiles, cols }
+  }, [currentPack, mosaicOffset, viewMode, viewport.height, viewport.width])
 
   const renderVisualLayer = (visual, isFadingLayer, fitMode = 'cover') => {
     if (!visual) return null
@@ -490,9 +547,49 @@ export default function ShelfCinema({ onExit }) {
           from { transform: translate3d(0, 0, 0) scale(1); }
           to { transform: translate3d(var(--drift-x), var(--drift-y), 0) scale(var(--end-scale)); }
         }
+        @keyframes shelfGalleryDrift {
+          from { transform: translateX(-1.2%); }
+          to { transform: translateX(1.2%); }
+        }
+        @keyframes shelfMosaicShift {
+          from { transform: translate3d(0, 0, 0); }
+          to { transform: translate3d(-1.2%, 0, 0); }
+        }
       `}</style>
 
-      {!useDualLane ? (
+      {viewMode === 'mosaic' ? (
+        <div style={styles.mosaicWrap}>
+          <div
+            style={{
+              ...styles.mosaicGrid,
+              gridTemplateColumns: `repeat(${mosaicTiles.cols || 1}, 1fr)`
+            }}
+          >
+            {(mosaicTiles.tiles || []).map((tile, idx) => (
+              <div
+                key={tile.key}
+                style={{
+                  ...styles.mosaicTile,
+                  opacity: idx % 5 === 0 ? 0.92 : 0.82
+                }}
+              >
+                <img
+                  src={tile.image.url}
+                  alt={tile.image.title || 'Mosaic tile'}
+                  style={styles.mosaicImage}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : viewMode === 'gallery' ? (
+        <div style={styles.galleryBackdrop}>
+          <div style={styles.galleryFrame}>
+            {renderVisualLayer(leftPrevious, true, 'contain')}
+            {renderVisualLayer(leftCurrent, false, 'contain')}
+          </div>
+        </div>
+      ) : !useDualLane ? (
         <>
           {renderVisualLayer(leftPrevious, true, 'contain')}
           {renderVisualLayer(leftCurrent, false, 'contain')}
@@ -534,9 +631,11 @@ export default function ShelfCinema({ onExit }) {
         <div style={styles.bottomLeft}>
           <div style={styles.seriesName}>{currentPack?.series?.name || ''}</div>
           <div style={styles.authorName}>{currentPack?.series?.author_name || ''}</div>
-          {useDualLane && (
+          {viewMode === 'cinema' && useDualLane && (
             <div style={styles.modeHint}>Dual-lane mode</div>
           )}
+          {viewMode === 'gallery' && <div style={styles.modeHint}>Gallery mode</div>}
+          {viewMode === 'mosaic' && <div style={styles.modeHint}>Mosaic mode</div>}
         </div>
 
         <div style={styles.bottomCenter}>
@@ -611,6 +710,55 @@ const styles = {
     position: 'relative',
     overflow: 'hidden',
     background: '#000'
+  },
+  galleryBackdrop: {
+    position: 'absolute',
+    inset: 0,
+    background: 'radial-gradient(circle, #1b1712 0%, #0f0e0c 65%)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    animation: 'shelfGalleryDrift 18s ease-in-out infinite alternate'
+  },
+  galleryFrame: {
+    position: 'relative',
+    width: 'min(78vw, 980px)',
+    height: 'min(82vh, 1180px)',
+    borderRadius: 14,
+    border: '1px solid rgba(255,255,255,0.22)',
+    background: 'rgba(0,0,0,0.72)',
+    boxShadow: '0 24px 72px rgba(0,0,0,0.62), inset 0 0 0 12px rgba(220,190,150,0.08)',
+    overflow: 'hidden'
+  },
+  mosaicWrap: {
+    position: 'absolute',
+    inset: 0,
+    overflow: 'hidden',
+    background: '#080808'
+  },
+  mosaicGrid: {
+    position: 'absolute',
+    inset: '-2%',
+    display: 'grid',
+    gridAutoRows: '1fr',
+    gap: 8,
+    padding: 8,
+    animation: 'shelfMosaicShift 12s linear infinite alternate'
+  },
+  mosaicTile: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.08)',
+    background: '#101010',
+    transition: 'opacity 900ms ease'
+  },
+  mosaicImage: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+    filter: 'saturate(1.03)'
   },
   vignette: {
     position: 'absolute',

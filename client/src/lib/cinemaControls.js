@@ -3,6 +3,7 @@ export const CINEMA_CONTROLS_KEY = 'bookshelf:cinema-controls:v1'
 export const DEFAULT_CINEMA_CONTROLS = {
   imageCount: 10,
   imageDurationSec: 8,
+  viewMode: 'cinema',
   seriesRules: {},
   genreRules: {}
 }
@@ -24,6 +25,7 @@ export function readCinemaControls() {
     return {
       imageCount: clampInt(parsed.imageCount, 3, 15, DEFAULT_CINEMA_CONTROLS.imageCount),
       imageDurationSec: clampInt(parsed.imageDurationSec, 3, 15, DEFAULT_CINEMA_CONTROLS.imageDurationSec),
+      viewMode: normalizeViewMode(parsed.viewMode),
       seriesRules: normalizeRulesMap(parsed.seriesRules),
       genreRules: normalizeRulesMap(parsed.genreRules)
     }
@@ -36,6 +38,7 @@ export function writeCinemaControls(controls) {
   const normalized = {
     imageCount: clampInt(controls?.imageCount, 3, 15, DEFAULT_CINEMA_CONTROLS.imageCount),
     imageDurationSec: clampInt(controls?.imageDurationSec, 3, 15, DEFAULT_CINEMA_CONTROLS.imageDurationSec),
+    viewMode: normalizeViewMode(controls?.viewMode),
     seriesRules: normalizeRulesMap(controls?.seriesRules),
     genreRules: normalizeRulesMap(controls?.genreRules)
   }
@@ -62,4 +65,10 @@ function clampInt(value, min, max, fallback) {
   const n = Number(value)
   if (!Number.isFinite(n)) return fallback
   return Math.max(min, Math.min(max, Math.round(n)))
+}
+
+function normalizeViewMode(value) {
+  const normalized = String(value || '').toLowerCase()
+  if (['cinema', 'gallery', 'mosaic'].includes(normalized)) return normalized
+  return DEFAULT_CINEMA_CONTROLS.viewMode
 }

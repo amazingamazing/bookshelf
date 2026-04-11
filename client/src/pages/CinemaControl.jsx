@@ -82,6 +82,42 @@ export default function CinemaControl() {
 
       <div style={sectionStyle}>
         <h2 style={sectionTitle}>Playback</h2>
+        <div style={{ marginBottom: 12 }}>
+          <div style={labelStyle}>Viewing mode</div>
+          <div style={modeGridStyle}>
+            {[
+              {
+                key: 'cinema',
+                title: 'Cinema',
+                subtitle: 'Ken Burns + crossfade. Classic ambient film look.'
+              },
+              {
+                key: 'gallery',
+                title: 'Gallery',
+                subtitle: 'Framed art on a wall with slow drift. Cozy and intimate.'
+              },
+              {
+                key: 'mosaic',
+                title: 'Mosaic',
+                subtitle: 'Living cover wall slowly shifting. Breadth at a glance.'
+              }
+            ].map(mode => (
+              <button
+                key={mode.key}
+                onClick={() => updateControls(prev => ({ ...prev, viewMode: mode.key }))}
+                style={{
+                  ...modeCardStyle,
+                  border: controls.viewMode === mode.key ? '1px solid #6ea8fe66' : '1px solid #2a2822',
+                  background: controls.viewMode === mode.key ? '#6ea8fe18' : '#0f0e0c',
+                  color: controls.viewMode === mode.key ? '#e8e4dc' : '#c8c4bc'
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{mode.title}</div>
+                <div style={{ fontSize: 11, lineHeight: 1.45, color: '#9a9488' }}>{mode.subtitle}</div>
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ display: 'grid', gap: 14 }}>
           <div>
             <div style={labelStyle}>Images per series: {controls.imageCount}</div>
@@ -225,5 +261,16 @@ const resetBtn = {
   color: '#e8e4dc',
   fontSize: 12,
   padding: '6px 10px',
+  cursor: 'pointer'
+}
+const modeGridStyle = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+  gap: 8
+}
+const modeCardStyle = {
+  borderRadius: 8,
+  padding: '10px 12px',
+  textAlign: 'left',
   cursor: 'pointer'
 }
