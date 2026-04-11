@@ -6,6 +6,8 @@ import {
   writeCinemaControls
 } from '../lib/cinemaControls'
 
+const TIER_ORDER = ['S', 'A', 'B', 'C', 'D']
+
 export default function CinemaControl() {
   const [series, setSeries] = useState([])
   const [loading, setLoading] = useState(true)
@@ -19,30 +21,23 @@ export default function CinemaControl() {
       .finally(() => setLoading(false))
   }, [])
 
-  const genres = useMemo(() => {
-    const set = new Set()
-    for (const s of series) {
-      for (const g of (s.genres || [])) set.add(String(g))
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b))
+  const eligibleSeries = useMemo(() => {
+    return series
+      .filter(s => TIER_ORDER.includes(String(s.tier || '').toUpperCase()) && Number(s.book_count) > 0)
+      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
   }, [series])
 
   const filteredSeries = useMemo(() => {
     const q = search.trim().toLowerCase()
-    const ranked = series
-      .filter(s => ['S', 'A', 'B', 'C', 'D'].includes(s.tier))
-      .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
-    if (!q) return ranked
-    return ranked.filter(s => (
+    if (!q) return eligibleSeries
+    return eligibleSeries.filter(s => (
       String(s.name || '').toLowerCase().includes(q) ||
       String(s.author_name || '').toLowerCase().includes(q)
     ))
-  }, [search, series])
+  }, [eligibleSeries, search])
 
   const whitelistSeriesCount = Object.values(controls.seriesRules || {}).filter(v => v === 'whitelist').length
   const blacklistSeriesCount = Object.values(controls.seriesRules || {}).filter(v => v === 'blacklist').length
-  const whitelistGenreCount = Object.values(controls.genreRules || {}).filter(v => v === 'whitelist').length
-  const blacklistGenreCount = Object.values(controls.genreRules || {}).filter(v => v === 'blacklist').length
 
   const updateControls = (updater) => {
     setControls(prev => {
@@ -60,12 +55,32 @@ export default function CinemaControl() {
     })
   }
 
-  const setGenreRule = (genreName, mode) => {
+  const handleDebugModeToggle = () => {
     updateControls(prev => {
-      const nextGenreRules = { ...(prev.genreRules || {}) }
-      if (mode === 'neutral') delete nextGenreRules[String(genreName)]
-      else nextGenreRules[String(genreName)] = mode
-      return { ...prev, genreRules: nextGenreRules }
+      if (!prev.debugMode) {
+        return {
+          ...prev,
+          debugMode: true,
+          lastNonDebug: {
+            holdMinSec: prev.holdMinSec,
+            holdMaxSec: prev.holdMaxSec,
+            crossfadeSec: prev.crossfadeSec,
+            kenBurnsScale: prev.kenBurnsScale
+          },
+          holdMinSec: 3,
+          holdMaxSec: 3,
+          crossfadeSec: 0.5,
+          kenBurnsScale: 1
+        }
+      }
+      return {
+        ...prev,
+        debugMode: false,
+        holdMinSec: prev.lastNonDebug?.holdMinSec ?? DEFAULT_CINEMA_CONTROLS.holdMinSec,
+        holdMaxSec: prev.lastNonDebug?.holdMaxSec ?? DEFAULT_CINEMA_CONTROLS.holdMaxSec,
+        crossfadeSec: prev.lastNonDebug?.crossfadeSec ?? DEFAULT_CINEMA_CONTROLS.crossfadeSec,
+        kenBurnsScale: prev.lastNonDebug?.kenBurnsScale ?? DEFAULT_CINEMA_CONTROLS.kenBurnsScale
+      }
     })
   }
 
@@ -82,99 +97,96 @@ export default function CinemaControl() {
 
       <div style={sectionStyle}>
         <h2 style={sectionTitle}>Playback</h2>
-        <div style={{ marginBottom: 12 }}>
-          <div style={labelStyle}>Viewing mode</div>
-          <div style={modeGridStyle}>
-            {[
-              {
-                key: 'cinema',
-                title: 'Cinema',
-                subtitle: 'Ken Burns + crossfade. Classic ambient film look.'
-              },
-              {
-                key: 'gallery',
-                title: 'Gallery',
-                subtitle: 'Framed art on a wall with slow drift. Cozy and intimate.'
-              },
-              {
-                key: 'mosaic',
-                title: 'Mosaic',
-                subtitle: 'Living cover wall slowly shifting. Breadth at a glance.'
-              }
-            ].map(mode => (
-              <button
-                key={mode.key}
-                onClick={() => updateControls(prev => ({ ...prev, viewMode: mode.key }))}
-                style={{
-                  ...modeCardStyle,
-                  border: controls.viewMode === mode.key ? '1px solid #6ea8fe66' : '1px solid #2a2822',
-                  background: controls.viewMode === mode.key ? '#6ea8fe18' : '#0f0e0c',
-                  color: controls.viewMode === mode.key ? '#e8e4dc' : '#c8c4bc'
-                }}
-              >
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>{mode.title}</div>
-                <div style={{ fontSize: 11, lineHeight: 1.45, color: '#9a9488' }}>{mode.subtitle}</div>
-              </button>
-            ))}
-          </div>
+        <div style={controlRow}>
+          <div style={labelStyle}>Hold duration range</div>
+          <div style={subtleText}>{controls.holdMinSec.toFixed(1)}s - {controls.holdMaxSec.toFixed(1)}s</div>
+          <input
+            type="range"
+            min="3"
+            max="90"
+            step="0.5"
+            value={controls.holdMinSec}
+            onChange={e => updateControls(prev => ({ ...prev, holdMinSec: Number(e.target.value) || 3 }))}
+            style={{ width: '100%' }}
+          />
+          <input
+            type="range"
+            min="3"
+            max="90"
+            step="0.5"
+            value={controls.holdMaxSec}
+            onChange={e => updateControls(prev => ({ ...prev, holdMaxSec: Number(e.target.value) || 3 }))}
+            style={{ width: '100%' }}
+          />
         </div>
-        <div style={{ display: 'grid', gap: 14 }}>
-          <div>
-            <div style={labelStyle}>Images per series: {controls.imageCount}</div>
-            <input
-              type="range"
-              min="3"
-              max="15"
-              step="1"
-              value={controls.imageCount}
-              onChange={e => updateControls(prev => ({ ...prev, imageCount: Number(e.target.value) || 10 }))}
-              style={{ width: '100%' }}
-            />
-          </div>
-          <div>
-            <div style={labelStyle}>Image duration: {controls.imageDurationSec}s</div>
-            <input
-              type="range"
-              min="3"
-              max="15"
-              step="1"
-              value={controls.imageDurationSec}
-              onChange={e => updateControls(prev => ({ ...prev, imageDurationSec: Number(e.target.value) || 8 }))}
-              style={{ width: '100%' }}
-            />
-          </div>
+
+        <div style={controlRow}>
+          <div style={labelStyle}>Crossfade duration: {controls.crossfadeSec.toFixed(1)}s</div>
+          <input
+            type="range"
+            min="0.5"
+            max="5"
+            step="0.1"
+            value={controls.crossfadeSec}
+            onChange={e => updateControls(prev => ({ ...prev, crossfadeSec: Number(e.target.value) || 0.5 }))}
+            style={{ width: '100%' }}
+          />
+        </div>
+
+        <div style={controlRow}>
+          <div style={labelStyle}>Ken Burns max scale: {controls.kenBurnsScale.toFixed(2)}</div>
+          <input
+            type="range"
+            min="1"
+            max="1.08"
+            step="0.01"
+            value={controls.kenBurnsScale}
+            onChange={e => updateControls(prev => ({ ...prev, kenBurnsScale: Number(e.target.value) || 1 }))}
+            style={{ width: '100%' }}
+          />
         </div>
       </div>
 
       <div style={sectionStyle}>
-        <h2 style={sectionTitle}>Genre Rules</h2>
-        <div style={subtleText}>
-          Whitelist genres force inclusion. If any genre is whitelisted, Shelf Cinema only rotates series matching at least one whitelisted genre.
+        <h2 style={sectionTitle}>Fan Art</h2>
+        <label style={toggleRow}>
+          <input
+            type="checkbox"
+            checked={controls.fanartEnabled}
+            onChange={e => updateControls(prev => ({ ...prev, fanartEnabled: e.target.checked }))}
+          />
+          <span>Enable fan art between covers</span>
+        </label>
+        <div style={controlRow}>
+          <div style={labelStyle}>Fan art per cover</div>
+          <select
+            value={controls.fanartPerCover}
+            onChange={e => updateControls(prev => ({ ...prev, fanartPerCover: e.target.value }))}
+            style={selectStyle}
+          >
+            <option value="random">Random (1-3)</option>
+            <option value="0">0 (off)</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+          </select>
         </div>
+      </div>
+
+      <div style={sectionStyle}>
+        <h2 style={sectionTitle}>Debug Mode</h2>
         <div style={{ ...subtleText, marginBottom: 10 }}>
-          Whitelisted: {whitelistGenreCount} · Blacklisted: {blacklistGenreCount}
+          Applies fast cycling preset: hold 3s, crossfade 0.5s, Ken Burns off.
         </div>
-        {genres.length === 0 && !loading && <div style={subtleText}>No genres available yet.</div>}
-        <div style={gridStyle}>
-          {genres.map(genre => {
-            const mode = controls.genreRules?.[genre] || 'neutral'
-            return (
-              <RuleChip
-                key={genre}
-                label={genre}
-                mode={mode}
-                onToggle={() => setGenreRule(genre, cycleRuleMode(mode))}
-              />
-            )
-          })}
-        </div>
+        <label style={toggleRow}>
+          <input type="checkbox" checked={controls.debugMode} onChange={handleDebugModeToggle} />
+          <span>Debug mode</span>
+        </label>
       </div>
 
       <div style={sectionStyle}>
-        <h2 style={sectionTitle}>Series Rules</h2>
-        <div style={subtleText}>
-          Whitelist series pins them into rotation. Blacklist removes them.
-        </div>
+        <h2 style={sectionTitle}>Series Whitelist / Blacklist</h2>
+        <div style={subtleText}>Whitelist limits playback to those series only. Blacklist always excludes.</div>
         <div style={{ ...subtleText, marginBottom: 10 }}>
           Whitelisted: {whitelistSeriesCount} · Blacklisted: {blacklistSeriesCount}
         </div>
@@ -193,7 +205,7 @@ export default function CinemaControl() {
               return (
                 <RuleChip
                   key={s.id}
-                  label={`${s.name}${s.author_name ? ` — ${s.author_name}` : ''}`}
+                  label={`${s.name}${s.author_name ? ` - ${s.author_name}` : ''}`}
                   mode={mode}
                   onToggle={() => setSeriesRule(s.id, cycleRuleMode(mode))}
                 />
@@ -227,9 +239,21 @@ const sectionTitle = { color: '#e8e4dc', fontSize: 17, margin: '0 0 8px 0' }
 const subtleText = { color: '#9a9488', fontSize: 12, lineHeight: 1.5 }
 const labelStyle = { color: '#c8c4bc', fontSize: 13, marginBottom: 4 }
 const gridStyle = { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 8 }
+const controlRow = { display: 'grid', gap: 8, marginBottom: 12 }
+const toggleRow = { display: 'flex', gap: 8, alignItems: 'center', color: '#e8e4dc', fontSize: 13 }
+const selectStyle = {
+  width: '100%',
+  background: '#0a0806',
+  border: '1px solid #2a2822',
+  borderRadius: 8,
+  color: '#e8e4dc',
+  padding: '8px 10px',
+  fontSize: 13,
+  outline: 'none'
+}
 const inputStyle = {
   width: '100%',
-  background: '#0f0e0c',
+  background: '#0a0806',
   border: '1px solid #2a2822',
   borderRadius: 8,
   color: '#e8e4dc',
@@ -261,16 +285,5 @@ const resetBtn = {
   color: '#e8e4dc',
   fontSize: 12,
   padding: '6px 10px',
-  cursor: 'pointer'
-}
-const modeGridStyle = {
-  display: 'grid',
-  gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
-  gap: 8
-}
-const modeCardStyle = {
-  borderRadius: 8,
-  padding: '10px 12px',
-  textAlign: 'left',
   cursor: 'pointer'
 }
