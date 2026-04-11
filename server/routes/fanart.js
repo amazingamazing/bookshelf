@@ -62,7 +62,17 @@ router.get('/deviantart', async (req, res) => {
             WHERE b1.series_id = s.id
             ORDER BY b1.series_order NULLS LAST, b1.id
             LIMIT 1
-          ) AS first_book_title
+          ) AS first_book_title,
+          (
+            SELECT ARRAY_AGG(bt.title)
+            FROM (
+              SELECT b2.title
+              FROM books b2
+              WHERE b2.series_id = s.id
+              ORDER BY b2.series_order NULLS LAST, b2.id
+              LIMIT 6
+            ) bt
+          ) AS sample_book_titles
         FROM series s
         LEFT JOIN authors a ON a.id = s.author_id
         WHERE s.id = $1
@@ -73,6 +83,8 @@ router.get('/deviantart', async (req, res) => {
       const seriesQuery = [s.series_name, s.author_name, 'fan art'].filter(Boolean).join(' ');
       searchQueries.push(seriesQuery);
       searchQueries.push([s.series_name, 'fan art'].filter(Boolean).join(' '));
+      const acronym = buildSeriesAcronym(s.series_name);
+      if (acronym) searchQueries.push([acronym, 'fan art'].filter(Boolean).join(' '));
       if (s.series_name) relevanceHints.push(s.series_name);
 
       if (s.first_book_title) {
@@ -86,6 +98,15 @@ router.get('/deviantart', async (req, res) => {
           relevanceHints.push(shortBookTitle);
         }
         relevanceHints.push(s.first_book_title);
+      }
+
+      const sampleTitles = Array.isArray(s.sample_book_titles) ? s.sample_book_titles : [];
+      for (const title of sampleTitles.slice(0, 4)) {
+        const cleanedTitle = stripBookSubtitle(title);
+        if (!cleanedTitle) continue;
+        searchQueries.push([cleanedTitle, 'fan art'].filter(Boolean).join(' '));
+        if (s.series_name) searchQueries.push([cleanedTitle, s.series_name, 'fan art'].filter(Boolean).join(' '));
+        relevanceHints.push(cleanedTitle);
       }
     }
 
@@ -127,6 +148,7 @@ router.get('/deviantart', async (req, res) => {
     const seen = new Set();
     const unique = [];
     let relevanceRejected = 0;
+    const relevanceExamples = [];
     for (const item of merged) {
       if (seen.has(item.link)) continue;
       seen.add(item.link);
@@ -135,12 +157,25 @@ router.get('/deviantart', async (req, res) => {
         relevanceRejected++;
         continue;
       }
-      unique.push({ ...item, relevance_reason: relevance.reason });
+      const scoredItem = {
+        ...item,
+        relevance_reason: relevance.reason,
+        relevance_score: relevance.score
+      };
+      unique.push(scoredItem);
+      if (relevanceExamples.length < 5) {
+        relevanceExamples.push({
+          title: item.title,
+          reason: relevance.reason,
+          score: relevance.score
+        });
+      }
       if (unique.length >= limit * 12) break;
     }
     debug.stage_counts.unique_links = seen.size;
     debug.stage_counts.relevance_kept = unique.length;
     debug.stage_counts.relevance_rejected = relevanceRejected;
+    debug.relevance_examples = relevanceExamples;
 
     const withLiveImages = [];
     const targetCandidatePool = Math.max(limit * 6, 24);
@@ -173,7 +208,8 @@ router.get('/deviantart', async (req, res) => {
         const stats = metadata?.stats || null;
         const popularityScore = computePopularityScore(stats);
         const qualityScore = computeQualityScore(item);
-        const score = popularityScore + qualityScore;
+        const relevanceScore = Number(item.relevance_score) || 0;
+        const score = popularityScore + qualityScore + relevanceScore;
         return {
           ...item,
           stats,
@@ -191,7 +227,7 @@ router.get('/deviantart', async (req, res) => {
           tags: [],
           quality_score: Number(computeQualityScore(item).toFixed(3)),
           popularity_score: null,
-          score: Number(computeQualityScore(item).toFixed(3)),
+          score: Number((computeQualityScore(item) + (Number(item.relevance_score) || 0)).toFixed(3)),
           metadata_enriched: false
         }));
     }
@@ -515,9 +551,9 @@ function deriveCreatorKey(creator, link) {
 }
 
 function evaluateRelevance(item, profiles, anchorPhrases) {
-  if (!profiles.length) return { pass: true, reason: 'no_profiles' };
+  if (!profiles.length) return { pass: true, reason: 'no_profiles', score: 0 };
   const noisy = normalizeSearchText(`${item.title} ${item.description_text}`);
-  if (/\b(pdf|script|movie\s+review|review)\b/i.test(noisy)) return { pass: false, reason: 'noise_term' };
+  if (/\b(pdf|script|movie\s+review|review)\b/i.test(noisy)) return { pass: false, reason: 'noise_term', score: -10 };
 
   const hayTitleTags = normalizeSearchText([
     item.title,
@@ -531,35 +567,48 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
     .filter(token => token.length >= 4)
     .filter(token => !isNoiseToken(token));
   const anchorTokenHitCount = anchorTokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
+  let score = 0;
+  let reason = 'broad_keep';
 
   // First, prefer direct phrase anchoring against the intended series/book strings.
   for (const anchor of (anchorPhrases || [])) {
     const normalizedAnchor = normalizeSearchText(anchor);
     if (!normalizedAnchor) continue;
-    if (hayTitleTags.includes(normalizedAnchor)) return { pass: true, reason: `anchor:${anchor}` };
+    if (hayTitleTags.includes(normalizedAnchor)) {
+      score += 4.5;
+      reason = `anchor:${anchor}`;
+      break;
+    }
   }
 
-  // Guardrail: require at least some anchor signal in title/tags/creator.
-  if (anchorTokenHitCount < 1) return { pass: false, reason: 'anchor_token_miss' };
+  score += Math.min(3, anchorTokenHitCount) * 0.9;
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
     if (phrase && phrase.length >= 8 && hayTitleTags.includes(phrase)) {
-      return { pass: true, reason: `phrase:${profile.phrase}` };
+      score += 3;
+      reason = `phrase:${profile.phrase}`;
+      break;
     }
 
     const matchesInTitleTags = profile.tokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
-    if (matchesInTitleTags >= 2) return { pass: true, reason: `title_tokens:${matchesInTitleTags}` };
+    if (matchesInTitleTags >= 2) {
+      score += Math.min(3, matchesInTitleTags) * 0.8;
+      reason = `title_tokens:${matchesInTitleTags}`;
+    }
   }
 
-  // Description text is noisy, so only allow it as secondary signal once anchors already matched.
+  // Description text is noisy, keep it weak.
   const descMatches = profiles.reduce((best, profile) => {
     const matches = profile.tokens.reduce((acc, token) => acc + (hayDescription.includes(token) ? 1 : 0), 0);
     return Math.max(best, matches);
   }, 0);
-  if (descMatches >= 4) return { pass: true, reason: `desc_tokens:${descMatches}` };
+  if (descMatches >= 4) {
+    score += 0.9;
+    if (reason === 'broad_keep') reason = `desc_tokens:${descMatches}`;
+  }
 
-  return { pass: false, reason: 'no_anchor_match' };
+  return { pass: true, reason, score: Number(score.toFixed(3)) };
 }
 
 function tokenize(value) {
@@ -574,7 +623,7 @@ function isNoiseToken(token) {
   return [
     'fan', 'art', 'series', 'book', 'books', 'review', 'movie', 'pdf',
     'the', 'and', 'with', 'from', 'for', 'this', 'that', 'one', 'last',
-    'hosts', 'morning', 'time', 'world'
+    'hosts', 'morning'
   ].includes(token);
 }
 
@@ -601,6 +650,19 @@ function stripBookSubtitle(value) {
   // "The Eye of the World: Book One of The Wheel of Time" => "The Eye of the World"
   const colonSplit = raw.split(':')[0].trim();
   return colonSplit || raw;
+}
+
+function buildSeriesAcronym(seriesName) {
+  const words = String(seriesName || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(' ')
+    .map(w => w.trim())
+    .filter(Boolean)
+    .filter(w => !['the', 'of', 'and', 'a', 'an'].includes(w));
+  if (words.length < 3) return '';
+  const acronym = words.map(w => w[0]).join('');
+  return acronym.length >= 3 ? acronym.toUpperCase() : '';
 }
 
 function normalizeSortMode(value) {
