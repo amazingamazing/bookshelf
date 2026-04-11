@@ -597,28 +597,6 @@ export default function ShelfCinema({ onExit }) {
         <div style={styles.bottomLeft}>
           <div style={styles.seriesName}>{currentSeries?.name || ''}</div>
           <div style={styles.authorName}>{currentSeries?.author_name || ''}</div>
-          {(currentSlide?.image?.source === 'fanart' || currentSlide?.image?.kind === 'fanart') && (
-            <div
-              style={{
-                ...styles.leftCreditRow,
-                opacity: attributionVisible ? 1 : 0,
-                transition: `opacity ${Math.max(140, Math.round((controls.crossfadeSec || 1) * 1000 * 0.6))}ms ease`
-              }}
-              onClick={event => event.stopPropagation()}
-            >
-              {currentSlide?.image?.creator_url ? (
-                <a href={currentSlide.image.creator_url} target="_blank" rel="noopener noreferrer" style={styles.leftCreditLink}>
-                  @{currentSlide.image.creator || 'artist'}
-                </a>
-              ) : currentSlide?.image?.external_link ? (
-                <a href={currentSlide.image.external_link} target="_blank" rel="noopener noreferrer" style={styles.leftCreditLink}>
-                  @{currentSlide.image.creator || 'artist'}
-                </a>
-              ) : (
-                <span style={styles.leftCreditLabel}>@{currentSlide?.image?.creator || 'artist'}</span>
-              )}
-            </div>
-          )}
         </div>
 
         <div style={styles.bottomRight}>
@@ -644,6 +622,40 @@ export default function ShelfCinema({ onExit }) {
           )}
         </div>
       </div>
+
+      {(currentSlide?.image?.source === 'fanart' || currentSlide?.image?.kind === 'fanart') && (
+        <div
+          style={{
+            ...styles.persistentAttribution,
+            opacity: attributionVisible ? (overlayVisible ? 0.98 : 0.25) : 0,
+            transition: `opacity ${Math.max(140, Math.round((controls.crossfadeSec || 1) * 1000 * 0.6))}ms ease`
+          }}
+          onClick={event => event.stopPropagation()}
+        >
+          <span style={styles.persistentAttributionLabel}>Fan art by </span>
+          {currentSlide?.image?.creator_url ? (
+            <a
+              href={currentSlide.image.creator_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.persistentAttributionLink}
+            >
+              @{getArtistDisplayName(currentSlide.image)}
+            </a>
+          ) : currentSlide?.image?.external_link ? (
+            <a
+              href={currentSlide.image.external_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={styles.persistentAttributionLink}
+            >
+              @{getArtistDisplayName(currentSlide.image)}
+            </a>
+          ) : (
+            <span style={styles.persistentAttributionLabel}>@{getArtistDisplayName(currentSlide.image)}</span>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -724,6 +736,26 @@ function interleaveFanartGroups(covers, freshFanart, seenFanart) {
   while (fresh.length) output.push(fresh.shift())
   while (seen.length) output.push(seen.shift())
   return output
+}
+
+function getArtistDisplayName(image) {
+  const raw = String(image?.creator || '').trim()
+  if (raw) return raw.replace(/^@+/, '')
+  const creatorUrl = String(image?.creator_url || '')
+  if (creatorUrl) {
+    const subdomainMatch = creatorUrl.match(/https?:\/\/([a-z0-9-]+)\.deviantart\.com/i)
+    if (subdomainMatch && subdomainMatch[1] && subdomainMatch[1].toLowerCase() !== 'www') {
+      return subdomainMatch[1]
+    }
+    const pathMatch = creatorUrl.match(/https?:\/\/(?:www\.)?deviantart\.com\/([a-z0-9-]+)/i)
+    if (pathMatch && pathMatch[1]) return pathMatch[1]
+  }
+  const artworkUrl = String(image?.external_link || '')
+  if (artworkUrl) {
+    const fallbackPath = artworkUrl.match(/https?:\/\/(?:www\.)?deviantart\.com\/([a-z0-9-]+)/i)
+    if (fallbackPath && fallbackPath[1]) return fallbackPath[1]
+  }
+  return 'unknown-artist'
 }
 
 const styles = {
@@ -831,17 +863,20 @@ const styles = {
     marginTop: 4,
     textShadow: '0 2px 10px rgba(0,0,0,0.75)'
   },
-  leftCreditRow: {
-    marginTop: 8,
-    fontSize: 12,
-    color: 'rgba(232,228,220,0.85)',
-    textShadow: '0 2px 10px rgba(0,0,0,0.75)'
+  persistentAttribution: {
+    position: 'absolute',
+    left: 28,
+    bottom: 24,
+    zIndex: 7,
+    fontSize: 14,
+    pointerEvents: 'auto',
+    textShadow: '0 2px 10px rgba(0,0,0,0.85)'
   },
-  leftCreditLabel: {
-    color: 'rgba(232,228,220,0.85)'
+  persistentAttributionLabel: {
+    color: 'rgba(232,228,220,0.9)'
   },
-  leftCreditLink: {
-    color: 'rgba(232,228,220,0.9)',
+  persistentAttributionLink: {
+    color: 'rgba(232,228,220,0.95)',
     textDecoration: 'underline',
     textUnderlineOffset: '2px'
   },
