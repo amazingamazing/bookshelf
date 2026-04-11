@@ -45,6 +45,7 @@ export default function SeriesView() {
   })
   const [debugCopyStatus, setDebugCopyStatus] = useState('')
   const [showDebug, setShowDebug] = useState(false)
+  const hasAssociatedBooks = Number(series?.book_count || 0) > 0
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -243,8 +244,10 @@ export default function SeriesView() {
                   fontWeight: 700, fontSize: 20, width: 40, height: 40, borderRadius: '50%',
                   display: 'flex', alignItems: 'center', justifyContent: 'center'
                 }}>{series.tier}</div>
-                {series.rating && <span style={{ fontSize: 18, color: '#f4c542' }}>{'★'.repeat(Math.floor(series.rating))}</span>}
-                <span style={{ color: '#9a9488', fontSize: 13 }}>{series.rating ? `${series.rating}/5` : 'Not rated'}</span>
+                {hasAssociatedBooks && series.rating && <span style={{ fontSize: 18, color: '#f4c542' }}>{'★'.repeat(Math.floor(series.rating))}</span>}
+                <span style={{ color: '#9a9488', fontSize: 13 }}>
+                  {hasAssociatedBooks ? (series.rating ? `${series.rating}/5` : 'Not rated') : 'No books in series'}
+                </span>
                 <button onClick={() => setEditing(true)} style={actionBtn}>Edit</button>
               </div>
               {series.notes && <p style={{ color: '#9a9488', fontSize: 14, lineHeight: 1.6 }}>{series.notes}</p>}

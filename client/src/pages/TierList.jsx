@@ -18,7 +18,12 @@ export default function TierList() {
   const scrollRef = useRef({ raf: null, delta: 0 })
 
   useEffect(() => {
-    fetch('/api/series').then(r => r.json()).then(setSeries)
+    fetch('/api/series')
+      .then(r => r.json())
+      .then(data => {
+        const safe = Array.isArray(data) ? data : []
+        setSeries(safe.filter(s => Number(s.book_count || 0) > 0))
+      })
   }, [])
 
   useEffect(() => {

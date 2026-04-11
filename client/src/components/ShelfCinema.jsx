@@ -6,6 +6,7 @@ const TIER_WEIGHTS = { S: 10, A: 6, B: 3, C: 1, D: 0.3 }
 const TIER_COLORS = { S: '#f4c542', A: '#6ea8fe', B: '#5cb85c', C: '#e67e22', D: '#e74c3c' }
 const FADE_MS = 1500
 const OVERLAY_HIDE_MS = 3000
+const RIGHT_LANE_START_DELAY_MS = 1000
 
 function readFanartPrefs() {
   try {
@@ -57,38 +58,53 @@ function shuffleTail(items) {
   return [first, ...copy]
 }
 
-function createVisual(image, index) {
+function createVisual(image, seed) {
   return {
-    key: `${image.url}::${index}::${Date.now()}`,
+    key: `${image.url}::${seed}::${Date.now()}`,
     image,
     durationMs: randomInt(6000, 10000),
-    driftX: `${(Math.random() * 7 - 3.5).toFixed(2)}%`,
-    driftY: `${(Math.random() * 7 - 3.5).toFixed(2)}%`
+    driftX: `${(Math.random() * 6 - 3).toFixed(2)}%`,
+    driftY: `${(Math.random() * 6 - 3).toFixed(2)}%`,
+    fadingOut: false
   }
 }
 
 export default function ShelfCinema({ onExit }) {
+  const rootRef = useRef(null)
+  const mountedRef = useRef(false)
+  const requestControllersRef = useRef(new Set())
+  const hideTimerRef = useRef(null)
+  const leftTimerRef = useRef(null)
+  const rightTimerRef = useRef(null)
+  const rightStartRef = useRef(null)
+  const leftFadeRef = useRef(null)
+  const rightFadeRef = useRef(null)
+  const prefetchingRef = useRef(false)
+  const switchingPackRef = useRef(false)
+  const nextPackRef = useRef(null)
+  const currentPackRef = useRef(null)
+  const cursorRef = useRef(0)
+
   const [seriesPool, setSeriesPool] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [overlayVisible, setOverlayVisible] = useState(true)
+  const [viewport, setViewport] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight
+  })
   const [currentPack, setCurrentPack] = useState(null)
   const [nextPack, setNextPack] = useState(null)
-  const [imageIndex, setImageIndex] = useState(0)
-  const [currentVisual, setCurrentVisual] = useState(null)
-  const [previousVisual, setPreviousVisual] = useState(null)
+  const [leftCurrent, setLeftCurrent] = useState(null)
+  const [leftPrevious, setLeftPrevious] = useState(null)
+  const [rightCurrent, setRightCurrent] = useState(null)
+  const [rightPrevious, setRightPrevious] = useState(null)
+  const [leftIndex, setLeftIndex] = useState(0)
+  const [rightIndex, setRightIndex] = useState(-1)
 
-  const hideTimerRef = useRef(null)
-  const slideTimerRef = useRef(null)
-  const previousFadeTimerRef = useRef(null)
-  const mountedRef = useRef(false)
-  const nextPackRef = useRef(null)
-  const prefetchingRef = useRef(false)
-  const requestControllersRef = useRef(new Set())
-
-  useEffect(() => {
-    nextPackRef.current = nextPack
-  }, [nextPack])
+  nextPackRef.current = nextPack
+  currentPackRef.current = currentPack
+  const useDualLane = viewport.width >= 1180 && viewport.width > viewport.height
 
   const clearTimer = (timerRef) => {
     if (timerRef.current) {
@@ -96,6 +112,15 @@ export default function ShelfCinema({ onExit }) {
       timerRef.current = null
     }
   }
+
+  const clearAllTimers = useCallback(() => {
+    clearTimer(hideTimerRef)
+    clearTimer(leftTimerRef)
+    clearTimer(rightTimerRef)
+    clearTimer(rightStartRef)
+    clearTimer(leftFadeRef)
+    clearTimer(rightFadeRef)
+  }, [])
 
   const setOverlayVisibleWithTimeout = useCallback(() => {
     setOverlayVisible(true)
@@ -121,6 +146,7 @@ export default function ShelfCinema({ onExit }) {
       })
       const data = await res.json()
       if (!res.ok) return null
+
       const deduped = []
       const seen = new Set()
       for (const image of (data.images || [])) {
@@ -159,46 +185,119 @@ export default function ShelfCinema({ onExit }) {
     return null
   }, [fetchPackForSeries, seriesPool])
 
-  const advanceImage = useCallback(async () => {
-    if (!currentPack) return
-    const nextIndex = imageIndex + 1
-    if (nextIndex < currentPack.images.length) {
-      const nextImage = currentPack.images[nextIndex]
-      setImageIndex(nextIndex)
-      setCurrentVisual((prev) => {
+  const pullNextImage = useCallback(() => {
+    const pack = currentPackRef.current
+    if (!pack || !Array.isArray(pack.images) || !pack.images.length) return null
+    const idx = cursorRef.current
+    if (idx >= pack.images.length) return null
+    cursorRef.current += 1
+    return { image: pack.images[idx], index: idx }
+  }, [])
+
+  const updateLaneVisual = useCallback((lane, next, seed) => {
+    if (lane === 'left') {
+      setLeftCurrent((prev) => {
         if (prev) {
-          clearTimer(previousFadeTimerRef)
-          const prevLayer = { ...prev, fadingOut: false, key: `${prev.key}-prev` }
-          setPreviousVisual(prevLayer)
+          setLeftPrevious({ ...prev, fadingOut: false, key: `${prev.key}-prev` })
           setTimeout(() => {
             if (!mountedRef.current) return
-            setPreviousVisual((value) => (value ? { ...value, fadingOut: true } : value))
-          }, 40)
-          previousFadeTimerRef.current = setTimeout(() => setPreviousVisual(null), FADE_MS + 80)
+            setLeftPrevious((value) => (value ? { ...value, fadingOut: true } : value))
+          }, 30)
+          clearTimer(leftFadeRef)
+          leftFadeRef.current = setTimeout(() => setLeftPrevious(null), FADE_MS + 80)
         }
-        return createVisual(nextImage, nextIndex)
+        return createVisual(next, seed)
       })
+      setLeftIndex(seed)
       return
     }
 
-    let pack = nextPackRef.current
-    if (!pack) pack = await loadPackByWeightedPick(currentPack.series.id)
-    if (!pack) return
+    setRightCurrent((prev) => {
+      if (prev) {
+        setRightPrevious({ ...prev, fadingOut: false, key: `${prev.key}-prev` })
+        setTimeout(() => {
+          if (!mountedRef.current) return
+          setRightPrevious((value) => (value ? { ...value, fadingOut: true } : value))
+        }, 30)
+        clearTimer(rightFadeRef)
+        rightFadeRef.current = setTimeout(() => setRightPrevious(null), FADE_MS + 80)
+      }
+      return createVisual(next, seed)
+    })
+    setRightIndex(seed)
+  }, [])
 
-    setNextPack(null)
-    setCurrentPack(pack)
-    setImageIndex(0)
-    setPreviousVisual(null)
-    setCurrentVisual(createVisual(pack.images[0], 0))
-  }, [currentPack, imageIndex, loadPackByWeightedPick])
+  const switchToNextPack = useCallback(async () => {
+    if (switchingPackRef.current) return
+    switchingPackRef.current = true
+    try {
+      const currentSeriesId = currentPackRef.current?.series?.id || null
+      let pack = nextPackRef.current
+      if (!pack) pack = await loadPackByWeightedPick(currentSeriesId)
+      if (!mountedRef.current || !pack) return
+
+      setNextPack(null)
+      setCurrentPack(pack)
+      setLeftPrevious(null)
+      setRightPrevious(null)
+      setLeftCurrent(null)
+      setRightCurrent(null)
+      setLeftIndex(0)
+      setRightIndex(-1)
+      cursorRef.current = 0
+
+      const left = pullNextImage() || { image: pack.images[0], index: 0 }
+      updateLaneVisual('left', left.image, left.index)
+
+      if (useDualLane && pack.images.length > 1) {
+        clearTimer(rightStartRef)
+        rightStartRef.current = setTimeout(() => {
+          const right = pullNextImage()
+          if (!mountedRef.current || !right) return
+          updateLaneVisual('right', right.image, right.index)
+        }, RIGHT_LANE_START_DELAY_MS)
+      } else {
+        setRightCurrent(null)
+        setRightIndex(-1)
+      }
+    } finally {
+      switchingPackRef.current = false
+    }
+  }, [loadPackByWeightedPick, pullNextImage, updateLaneVisual, useDualLane])
+
+  const advanceLane = useCallback(async (lane) => {
+    const next = pullNextImage()
+    if (next) {
+      updateLaneVisual(lane, next.image, next.index)
+      return
+    }
+    await switchToNextPack()
+  }, [pullNextImage, switchToNextPack, updateLaneVisual])
+
+  const handleExit = useCallback(() => {
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {})
+    }
+    onExit()
+  }, [onExit])
 
   useEffect(() => {
     mountedRef.current = true
     setOverlayVisibleWithTimeout()
+
     const onKeyDown = (event) => {
-      if (event.key === 'Escape') onExit()
+      if (event.key === 'Escape') handleExit()
     }
+    const onResize = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight })
+    }
+
     window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('resize', onResize)
+
+    if (rootRef.current && !document.fullscreenElement && rootRef.current.requestFullscreen) {
+      rootRef.current.requestFullscreen().catch(() => {})
+    }
 
     ;(async () => {
       try {
@@ -224,13 +323,12 @@ export default function ShelfCinema({ onExit }) {
     return () => {
       mountedRef.current = false
       window.removeEventListener('keydown', onKeyDown)
-      clearTimer(hideTimerRef)
-      clearTimer(slideTimerRef)
-      clearTimer(previousFadeTimerRef)
+      window.removeEventListener('resize', onResize)
+      clearAllTimers()
       for (const controller of requestControllersRef.current) controller.abort()
       requestControllersRef.current.clear()
     }
-  }, [onExit, setOverlayVisibleWithTimeout])
+  }, [clearAllTimers, handleExit, setOverlayVisibleWithTimeout])
 
   useEffect(() => {
     if (!seriesPool.length || currentPack) return
@@ -238,38 +336,80 @@ export default function ShelfCinema({ onExit }) {
       const pack = await loadPackByWeightedPick(null)
       if (!mountedRef.current || !pack) return
       setCurrentPack(pack)
-      setImageIndex(0)
-      setCurrentVisual(createVisual(pack.images[0], 0))
+      cursorRef.current = 0
+      const left = { image: pack.images[0], index: 0 }
+      cursorRef.current = 1
+      updateLaneVisual('left', left.image, left.index)
+      if (useDualLane && pack.images.length > 1) {
+        clearTimer(rightStartRef)
+        rightStartRef.current = setTimeout(() => {
+          if (!mountedRef.current) return
+          const right = pullNextImage()
+          if (!right) return
+          updateLaneVisual('right', right.image, right.index)
+        }, RIGHT_LANE_START_DELAY_MS)
+      }
       setError(null)
     })()
-  }, [currentPack, loadPackByWeightedPick, seriesPool])
+  }, [currentPack, loadPackByWeightedPick, pullNextImage, seriesPool, updateLaneVisual, useDualLane])
 
   useEffect(() => {
     if (!currentPack || nextPack || prefetchingRef.current) return
     prefetchingRef.current = true
     ;(async () => {
       const pack = await loadPackByWeightedPick(currentPack.series.id)
-      if (!mountedRef.current) return
-      if (pack) setNextPack(pack)
+      if (mountedRef.current && pack) setNextPack(pack)
       prefetchingRef.current = false
     })()
-  }, [currentPack, nextPack, loadPackByWeightedPick])
+  }, [currentPack, loadPackByWeightedPick, nextPack])
 
   useEffect(() => {
-    if (!currentVisual) return
-    clearTimer(slideTimerRef)
-    slideTimerRef.current = setTimeout(() => {
-      advanceImage()
-    }, currentVisual.durationMs)
-    return () => clearTimer(slideTimerRef)
-  }, [advanceImage, currentVisual])
+    if (!leftCurrent) return
+    clearTimer(leftTimerRef)
+    leftTimerRef.current = setTimeout(() => advanceLane('left'), leftCurrent.durationMs)
+    return () => clearTimer(leftTimerRef)
+  }, [advanceLane, leftCurrent])
+
+  useEffect(() => {
+    if (!useDualLane || !rightCurrent) return
+    clearTimer(rightTimerRef)
+    rightTimerRef.current = setTimeout(() => advanceLane('right'), rightCurrent.durationMs)
+    return () => clearTimer(rightTimerRef)
+  }, [advanceLane, rightCurrent, useDualLane])
+
+  useEffect(() => {
+    if (!currentPack) return
+    // If layout mode changes during playback, restart cleanly in the same series pack.
+    setLeftPrevious(null)
+    setRightPrevious(null)
+    setLeftCurrent(null)
+    setRightCurrent(null)
+    setLeftIndex(0)
+    setRightIndex(-1)
+    cursorRef.current = 0
+    const left = pullNextImage()
+    if (left) updateLaneVisual('left', left.image, left.index)
+    if (useDualLane && currentPack.images.length > 1) {
+      clearTimer(rightStartRef)
+      rightStartRef.current = setTimeout(() => {
+        const right = pullNextImage()
+        if (!mountedRef.current || !right) return
+        updateLaneVisual('right', right.image, right.index)
+      }, RIGHT_LANE_START_DELAY_MS)
+    }
+  }, [useDualLane]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeImage = useMemo(() => {
-    if (!currentPack) return null
-    return currentPack.images[imageIndex] || null
-  }, [currentPack, imageIndex])
+    if (!useDualLane) return leftCurrent?.image || null
+    return rightCurrent?.image || leftCurrent?.image || null
+  }, [leftCurrent, rightCurrent, useDualLane])
 
-  const renderLayer = (visual, isFadingLayer) => {
+  const dotActiveIndexes = useMemo(() => {
+    if (!useDualLane) return [leftIndex]
+    return [leftIndex, rightIndex].filter(v => v >= 0)
+  }, [leftIndex, rightIndex, useDualLane])
+
+  const renderVisualLayer = (visual, isFadingLayer, fitMode = 'cover') => {
     if (!visual) return null
     return (
       <div
@@ -289,7 +429,7 @@ export default function ShelfCinema({ onExit }) {
           style={{
             width: '100%',
             height: '100%',
-            objectFit: 'cover',
+            objectFit: fitMode,
             filter: 'saturate(1.04)',
             animation: `shelfCinemaKenBurns ${visual.durationMs}ms linear forwards`,
             transformOrigin: 'center center',
@@ -303,8 +443,9 @@ export default function ShelfCinema({ onExit }) {
 
   return (
     <div
+      ref={rootRef}
       style={styles.root}
-      onClick={onExit}
+      onClick={handleExit}
       onMouseMove={setOverlayVisibleWithTimeout}
       role="presentation"
     >
@@ -315,8 +456,24 @@ export default function ShelfCinema({ onExit }) {
         }
       `}</style>
 
-      {renderLayer(previousVisual, true)}
-      {renderLayer(currentVisual, false)}
+      {!useDualLane ? (
+        <>
+          {renderVisualLayer(leftPrevious, true, 'contain')}
+          {renderVisualLayer(leftCurrent, false, 'contain')}
+        </>
+      ) : (
+        <div style={styles.dualWrap}>
+          <div style={styles.dualPane}>
+            {renderVisualLayer(leftPrevious, true, 'contain')}
+            {renderVisualLayer(leftCurrent, false, 'contain')}
+          </div>
+          <div style={styles.dualPane}>
+            {renderVisualLayer(rightPrevious, true, 'contain')}
+            {renderVisualLayer(rightCurrent, false, 'contain')}
+          </div>
+        </div>
+      )}
+
       <div style={styles.vignette} />
 
       {loading && !currentPack && (
@@ -326,17 +483,24 @@ export default function ShelfCinema({ onExit }) {
         <div style={styles.centerMessage}>Unable to start Shelf Cinema: {error}</div>
       )}
 
-      <div
-        style={{
-          ...styles.overlay,
-          opacity: overlayVisible ? 1 : 0
-        }}
-      >
-        <button onClick={onExit} style={styles.closeBtn} title="Exit experience">✕</button>
+      <div style={{ ...styles.overlay, opacity: overlayVisible ? 1 : 0 }}>
+        <button
+          onClick={(event) => {
+            event.stopPropagation()
+            handleExit()
+          }}
+          style={styles.closeBtn}
+          title="Exit experience"
+        >
+          ✕
+        </button>
 
         <div style={styles.bottomLeft}>
           <div style={styles.seriesName}>{currentPack?.series?.name || ''}</div>
           <div style={styles.authorName}>{currentPack?.series?.author_name || ''}</div>
+          {useDualLane && (
+            <div style={styles.modeHint}>Dual-lane mode</div>
+          )}
         </div>
 
         <div style={styles.bottomCenter}>
@@ -345,8 +509,8 @@ export default function ShelfCinema({ onExit }) {
               key={`${image.url}-${idx}`}
               style={{
                 ...styles.dot,
-                opacity: idx === imageIndex ? 0.95 : 0.32,
-                transform: idx === imageIndex ? 'scale(1.05)' : 'scale(0.9)'
+                opacity: dotActiveIndexes.includes(idx) ? 0.95 : 0.3,
+                transform: dotActiveIndexes.includes(idx) ? 'scale(1.05)' : 'scale(0.9)'
               }}
             />
           ))}
@@ -400,10 +564,22 @@ const styles = {
     overflow: 'hidden',
     cursor: 'default'
   },
+  dualWrap: {
+    position: 'absolute',
+    inset: 0,
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: 0
+  },
+  dualPane: {
+    position: 'relative',
+    overflow: 'hidden',
+    background: '#000'
+  },
   vignette: {
     position: 'absolute',
     inset: 0,
-    background: 'radial-gradient(circle, rgba(0,0,0,0.0) 40%, rgba(0,0,0,0.28) 100%)',
+    background: 'radial-gradient(circle, rgba(0,0,0,0.0) 40%, rgba(0,0,0,0.26) 100%)',
     zIndex: 3,
     pointerEvents: 'none'
   },
@@ -454,6 +630,12 @@ const styles = {
     color: 'rgba(255,255,255,0.8)',
     fontSize: 16,
     marginTop: 4,
+    textShadow: '0 2px 10px rgba(0,0,0,0.75)'
+  },
+  modeHint: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    marginTop: 6,
     textShadow: '0 2px 10px rgba(0,0,0,0.75)'
   },
   bottomCenter: {

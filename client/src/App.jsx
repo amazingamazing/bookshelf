@@ -40,6 +40,17 @@ const styles = {
 
 export default function App() {
   const [cinemaOpen, setCinemaOpen] = useState(false)
+  const launchCinema = async () => {
+    try {
+      if (!document.fullscreenElement && document.documentElement?.requestFullscreen) {
+        await document.documentElement.requestFullscreen()
+      }
+    } catch {
+      // Ignore: browser may block fullscreen requests in some contexts.
+    } finally {
+      setCinemaOpen(true)
+    }
+  }
 
   return (
     <BrowserRouter>
@@ -58,7 +69,7 @@ export default function App() {
             </NavLink>
           ))}
           <span style={styles.spacer} />
-          <button onClick={() => setCinemaOpen(true)} style={styles.cinemaBtn} title="Launch ambient Shelf Cinema">
+          <button onClick={launchCinema} style={styles.cinemaBtn} title="Launch ambient Shelf Cinema">
             ✦ Shelf Cinema
           </button>
         </nav>
