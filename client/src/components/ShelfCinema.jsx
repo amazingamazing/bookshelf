@@ -22,6 +22,7 @@ export default function ShelfCinema({ onExit }) {
   const debugLogRef = useRef([])
   const prefetchedQueueRef = useRef(null)
   const recentFanartUrlsRef = useRef([])
+  const preloadedImageUrlsRef = useRef(new Set())
 
   const [seriesPool, setSeriesPool] = useState([])
   const [loading, setLoading] = useState(true)
@@ -86,12 +87,35 @@ export default function ShelfCinema({ onExit }) {
     return image
   }, [])
 
-  const preloadImage = useCallback((url) => {
+  const preloadImage = useCallback((url, timeoutMs = 8000) => {
     return new Promise((resolve) => {
+      const safeUrl = String(url || '').trim()
+      if (!safeUrl) {
+        resolve(false)
+        return
+      }
+      if (preloadedImageUrlsRef.current.has(safeUrl)) {
+        resolve(true)
+        return
+      }
       const image = new Image()
-      image.onload = () => resolve(true)
-      image.onerror = () => resolve(false)
-      image.src = url
+      let settled = false
+      const finish = (ok) => {
+        if (settled) return
+        settled = true
+        if (ok) preloadedImageUrlsRef.current.add(safeUrl)
+        resolve(ok)
+      }
+      const timeout = setTimeout(() => finish(false), timeoutMs)
+      image.onload = () => {
+        clearTimeout(timeout)
+        finish(true)
+      }
+      image.onerror = () => {
+        clearTimeout(timeout)
+        finish(false)
+      }
+      image.src = safeUrl
     })
   }, [])
 
@@ -150,7 +174,9 @@ export default function ShelfCinema({ onExit }) {
         seriesId: series.id,
         seriesName: series.name,
         imageCount: diversified.length,
-        freshFanart: fanartFresh.length
+        freshFanart: fanartFresh.length,
+        fanartCount: fanartFresh.length + fanartSeen.length,
+        coverCount: covers.length
       })
       return { series, images: diversified }
     } catch (err) {
@@ -263,7 +289,9 @@ export default function ShelfCinema({ onExit }) {
     let nextImage = pullNextImageFromQueue()
     let series = queueRef.current.series
     if (!nextImage) {
-      const nextQueue = await pickNextSeriesQueue()
+      let nextQueue = prefetchedQueueRef.current
+      prefetchedQueueRef.current = null
+      if (!nextQueue) nextQueue = await pickNextSeriesQueue()
       if (!mountedRef.current) return
       if (!nextQueue) {
         setError('No eligible series with images available for Shelf Cinema.')
@@ -281,6 +309,8 @@ export default function ShelfCinema({ onExit }) {
       logDebug('advance_no_next_image', {})
       return
     }
+    await preloadImages([nextImage.url])
+    if (!mountedRef.current) return
     setError(null)
     logDebug('slide_pushed', {
       seriesId: series?.id || null,
@@ -291,7 +321,7 @@ export default function ShelfCinema({ onExit }) {
     pushSlide(nextImage, series)
     prefetchUpcomingFromCurrentQueue()
     prefetchNextQueueRef.current(series?.id || null)
-  }, [logDebug, pickNextSeriesQueue, prefetchUpcomingFromCurrentQueue, pullNextImageFromQueue, pushSlide, rememberFanartImage, seriesPool.length])
+  }, [logDebug, pickNextSeriesQueue, prefetchUpcomingFromCurrentQueue, preloadImages, pullNextImageFromQueue, pushSlide, rememberFanartImage, seriesPool.length])
 
   const prefetchNextQueue = useCallback(async (excludeSeriesId = null) => {
     if (prefetchedQueueRef.current) return prefetchedQueueRef.current
@@ -449,7 +479,9 @@ export default function ShelfCinema({ onExit }) {
       }
       prefetchedQueueRef.current = null
       queueRef.current = { series: startupQueue.series, images: startupQueue.images, cursor: 0 }
-      await preloadImages(startupQueue.images.slice(0, 3).map(item => item.url))
+      const firstUrl = startupQueue.images[0]?.url || null
+      if (firstUrl) await preloadImages([firstUrl])
+      preloadImages(startupQueue.images.slice(1, 4).map(item => item.url)).then(() => {})
       if (!mountedRef.current) return
       const firstImage = pullNextImageFromQueue()
       if (!firstImage) {

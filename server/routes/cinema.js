@@ -86,27 +86,51 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, limit) {
   const host = req.get('x-forwarded-host') || req.get('host');
   if (!host) return [];
 
-  const sortMode = Math.random() < 0.45 ? 'newest' : 'popular';
-  const timeWindow = Math.random() < 0.4 ? '5y' : 'all';
-  const params = new URLSearchParams({
-    series_id: String(seriesId),
-    limit: String(limit),
-    allow_mature: 'false',
-    min_edge: '700',
-    sort_mode: sortMode,
-    time_window: timeWindow,
-    exclude_ai: 'true',
-    per_creator_cap: '2'
+  const primarySortMode = Math.random() < 0.45 ? 'newest' : 'popular';
+  const primaryTimeWindow = Math.random() < 0.4 ? '5y' : 'all';
+
+  const primary = await fetchFanartBatch(`${protocol}://${host}`, seriesId, {
+    limit,
+    sortMode: primarySortMode,
+    timeWindow: primaryTimeWindow,
+    minEdge: 700,
+    excludeAi: true,
+    perCreatorCap: 2
   });
 
-  const url = `${protocol}://${host}/api/fanart/deviantart?${params.toString()}`;
+  if (primary.length >= 6) return shuffleArray(primary);
+
+  const secondary = await fetchFanartBatch(`${protocol}://${host}`, seriesId, {
+    limit: Math.max(limit, 56),
+    sortMode: primarySortMode === 'popular' ? 'newest' : 'popular',
+    timeWindow: 'all',
+    minEdge: 420,
+    excludeAi: false,
+    perCreatorCap: 4
+  });
+
+  return shuffleArray(mergeUniqueByUrl(primary, secondary));
+}
+
+async function fetchFanartBatch(baseUrl, seriesId, options) {
+  const params = new URLSearchParams({
+    series_id: String(seriesId),
+    limit: String(Math.max(8, Number(options.limit) || 40)),
+    allow_mature: 'false',
+    min_edge: String(Math.max(200, Number(options.minEdge) || 700)),
+    sort_mode: options.sortMode || 'popular',
+    time_window: options.timeWindow || 'all',
+    exclude_ai: options.excludeAi ? 'true' : 'false',
+    per_creator_cap: String(Math.max(1, Number(options.perCreatorCap) || 2))
+  });
+  const url = `${baseUrl}/api/fanart/deviantart?${params.toString()}`;
   try {
     const response = await fetch(url);
     if (!response.ok) return [];
     const data = await response.json();
     const items = Array.isArray(data.items) ? data.items : [];
-    const seen = new Set();
     const out = [];
+    const seen = new Set();
     for (const item of items) {
       const imageUrl = String(item?.image_url || '').trim();
       if (!imageUrl || seen.has(imageUrl)) continue;
@@ -199,6 +223,18 @@ function shuffleArray(input) {
     arr[j] = tmp;
   }
   return arr;
+}
+
+function mergeUniqueByUrl(left, right) {
+  const out = [];
+  const seen = new Set();
+  for (const item of [...(left || []), ...(right || [])]) {
+    const url = String(item?.url || '').trim();
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push(item);
+  }
+  return out;
 }
 
 module.exports = router;
