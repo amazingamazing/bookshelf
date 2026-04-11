@@ -13,11 +13,10 @@
 - Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
-- Shelf Cinema ambient mode (fullscreen API support, weighted tier rotation, attribution-aware fan art display, overlay auto-hide, click/ESC exit)
-- Shelf Cinema now supports three viewing modes: Cinema (Ken Burns + cross-fade), Gallery (framed wall drift), Mosaic (living cover wall)
-- Shelf Cinema control panel page with persisted settings (view mode, image count, image duration, series whitelist/blacklist, genre whitelist/blacklist)
-- Cinema image aggregator endpoint: GET /api/cinema/series-images/:seriesId (series covers + edition/alternate covers + fan art + low-count supplemental sources + configurable image_limit)
-- Cinema sequencing now intentionally mixes media as cover -> 1-3 fan art when available (falls back to covers-only if fan art is unavailable)
+- Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
+- Shelf Cinema control panel page rebuilt with persisted settings for hold range, crossfade, Ken Burns intensity, fan-art toggle/per-cover amount, series whitelist/blacklist, and debug mode preset
+- Cinema image aggregator endpoint: GET /api/cinema/series-images/:seriesId now builds publication-order cover queues and inserts fan art between covers when available
+- Cinema backend fan-art retrieval now includes fallback retries (series-id + query-based attempts) and shuffled merge logic for better variety
 - Tier list hides series with zero associated books; series view hides rating when a series has no books
 - Deployed on Render
 
@@ -25,8 +24,10 @@
 - [ ] Relevance tuning is intentionally paused for now (good enough for current milestone / first-step feature)
 - [ ] Validate latest stricter relevance update on Render once deploy finishes (Wheel of Time + ASOIAF spot checks)
 - [ ] Later direction: add character-driven search seeds (popular character names per series) to improve precision/recall
-- [ ] Validate Shelf Cinema behavior on Render across all view modes (Cinema/Gallery/Mosaic), including fullscreen entry reliability by browser
-- [ ] Tune Shelf Cinema mode ergonomics (especially Mosaic density/speed and Gallery framing on different screen sizes)
+- [ ] Hide right-side scrollbar when entering Shelf Cinema fullscreen overlay
+- [ ] Improve first-image startup latency further (still occasional visible delay before first frame)
+- [ ] Improve fan art quality/relevance while preserving variety (current fallback broadens results but can drift off-theme)
+- [ ] Add better fan-art fallback strategy for low-signal series (currently some series still return covers-only)
 - [ ] Tune fan art-to-cover blend ratio and add optional user-facing "fan art intensity" control
 - [ ] improve creator extraction consistency from DeviantArt links/metadata
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
@@ -44,6 +45,7 @@
 - keep cover-edition debug instrumentation visible and one-click copyable from Book View (request context + resolver steps + result summary)
 - prioritize shipping the next feature milestone over deeper relevance iteration right now
 - Shelf Cinema settings are local-first (persisted in localStorage) and control eligibility + playback without storing image binaries
+- Shelf Cinema keeps artist attribution always visible for fan art (soft idle opacity, stronger on interaction), while other overlay UI auto-hides
 
 ## Product direction
 - Exploring commercial release as a paid app (one-time purchase or low-cost subscription)
