@@ -91,18 +91,22 @@ router.get('/series-images/:seriesId', async (req, res) => {
 async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'http';
   const host = req.get('x-forwarded-host') || req.get('host');
-  if (!host) return [];
   const seriesId = Number(series?.id);
   const seriesName = String(series?.name || '').trim();
   const firstBookTitle = String(series?.first_book_title || '').trim();
   const authorName = String(series?.author_name || '').trim();
   if (!Number.isFinite(seriesId)) return [];
-  const baseUrl = `${protocol}://${host}`;
+  const baseUrlCandidates = buildInternalBaseUrlCandidates({
+    envBase: process.env.CINEMA_INTERNAL_BASE_URL,
+    envPort: process.env.PORT,
+    protocol,
+    host
+  });
 
   const primarySortMode = Math.random() < 0.45 ? 'newest' : 'popular';
   const primaryTimeWindow = Math.random() < 0.4 ? '5y' : 'all';
 
-  const primary = await fetchFanartBySeriesId(baseUrl, seriesId, {
+  const primary = await fetchFanartBySeriesId(baseUrlCandidates, seriesId, {
     limit,
     sortMode: primarySortMode,
     timeWindow: primaryTimeWindow,
@@ -113,7 +117,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
 
   if (primary.length >= 6) return shuffleArray(primary);
 
-  const secondary = await fetchFanartBySeriesId(baseUrl, seriesId, {
+  const secondary = await fetchFanartBySeriesId(baseUrlCandidates, seriesId, {
     limit: Math.max(limit, 56),
     sortMode: primarySortMode === 'popular' ? 'newest' : 'popular',
     timeWindow: 'all',
@@ -131,7 +135,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
   if (seriesName && authorName) queryFallbacks.push(`${seriesName} ${authorName} fan art`);
 
   for (const query of queryFallbacks) {
-    const byQuery = await fetchFanartByQuery(baseUrl, query, {
+    const byQuery = await fetchFanartByQuery(baseUrlCandidates, query, {
       limit: Math.max(limit, 56),
       sortMode: 'popular',
       timeWindow: 'all',
@@ -146,7 +150,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
   return shuffleArray(merged);
 }
 
-async function fetchFanartBySeriesId(baseUrl, seriesId, options) {
+async function fetchFanartBySeriesId(baseUrls, seriesId, options) {
   const params = new URLSearchParams({
     series_id: String(seriesId),
     limit: String(Math.max(8, Number(options.limit) || 40)),
@@ -157,11 +161,10 @@ async function fetchFanartBySeriesId(baseUrl, seriesId, options) {
     exclude_ai: options.excludeAi ? 'true' : 'false',
     per_creator_cap: String(Math.max(1, Number(options.perCreatorCap) || 2))
   });
-  const url = `${baseUrl}/api/fanart/deviantart?${params.toString()}`;
-  return fetchFanartItems(url);
+  return fetchFanartItemsAcrossBases(baseUrls, `/api/fanart/deviantart?${params.toString()}`);
 }
 
-async function fetchFanartByQuery(baseUrl, query, options) {
+async function fetchFanartByQuery(baseUrls, query, options) {
   const params = new URLSearchParams({
     query: String(query),
     limit: String(Math.max(8, Number(options.limit) || 40)),
@@ -172,36 +175,57 @@ async function fetchFanartByQuery(baseUrl, query, options) {
     exclude_ai: options.excludeAi ? 'true' : 'false',
     per_creator_cap: String(Math.max(1, Number(options.perCreatorCap) || 2))
   });
-  const url = `${baseUrl}/api/fanart/deviantart?${params.toString()}`;
-  return fetchFanartItems(url);
+  return fetchFanartItemsAcrossBases(baseUrls, `/api/fanart/deviantart?${params.toString()}`);
 }
 
-async function fetchFanartItems(url) {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) return [];
-    const data = await response.json();
-    const items = Array.isArray(data.items) ? data.items : [];
-    const out = [];
-    const seen = new Set();
-    for (const item of items) {
-      const imageUrl = String(item?.image_url || '').trim();
-      if (!imageUrl || seen.has(imageUrl)) continue;
-      seen.add(imageUrl);
-      out.push({
-        url: imageUrl,
-        source: 'fanart',
-        kind: 'fanart',
-        title: item.title || null,
-        creator: item.creator || null,
-        creator_url: deriveDeviantartArtistUrl(item),
-        external_link: item.link || null
-      });
+async function fetchFanartItemsAcrossBases(baseUrls, pathWithQuery) {
+  for (const baseUrl of baseUrls) {
+    const url = `${baseUrl}${pathWithQuery}`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) continue;
+      const data = await response.json();
+      const items = Array.isArray(data.items) ? data.items : [];
+      const out = [];
+      const seen = new Set();
+      for (const item of items) {
+        const imageUrl = String(item?.image_url || '').trim();
+        if (!imageUrl || seen.has(imageUrl)) continue;
+        seen.add(imageUrl);
+        out.push({
+          url: imageUrl,
+          source: 'fanart',
+          kind: 'fanart',
+          title: item.title || null,
+          creator: item.creator || null,
+          creator_url: deriveDeviantartArtistUrl(item),
+          external_link: item.link || null
+        });
+      }
+      if (out.length) return out;
+    } catch {
+      // Try next base URL.
     }
-    return out;
-  } catch {
-    return [];
   }
+  return [];
+}
+
+function buildInternalBaseUrlCandidates({ envBase, envPort, protocol, host }) {
+  const out = [];
+  const push = (value) => {
+    const normalized = String(value || '').trim().replace(/\/+$/, '');
+    if (!normalized) return;
+    if (!out.includes(normalized)) out.push(normalized);
+  };
+  push(envBase);
+  if (envPort) {
+    push(`http://127.0.0.1:${envPort}`);
+    push(`http://localhost:${envPort}`);
+  }
+  if (host) push(`${protocol}://${host}`);
+  push('http://127.0.0.1:3001');
+  push('http://localhost:3001');
+  return out;
 }
 
 function composeCinemaSequence(covers, fanartPool, fanartPerCoverMode) {
