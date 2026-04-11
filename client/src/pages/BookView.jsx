@@ -5,8 +5,17 @@ export default function BookView() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [book, setBook] = useState(null)
-  const [editionState, setEditionState] = useState({ loading: false, error: null, editions: [], workKey: null })
+  const [editionState, setEditionState] = useState({
+    loading: false,
+    error: null,
+    editions: [],
+    workKey: null,
+    debug: [],
+    requestUrl: null,
+    fetchedAt: null
+  })
   const [selectingCover, setSelectingCover] = useState(null)
+  const [debugCopyStatus, setDebugCopyStatus] = useState(null)
 
   const loadBook = async () => {
     const res = await fetch(`/api/books/${id}`)
@@ -25,19 +34,64 @@ export default function BookView() {
   const canLookupEditions = Boolean(book.title || book.isbn)
 
   const findEditionCovers = async () => {
-    setEditionState({ loading: true, error: null, editions: [], workKey: null })
+    setDebugCopyStatus(null)
+    const requestUrl = `/api/covers/editions?book_id=${encodeURIComponent(id)}&debug=1`
+    setEditionState({
+      loading: true,
+      error: null,
+      editions: [],
+      workKey: null,
+      debug: [],
+      requestUrl,
+      fetchedAt: null
+    })
     try {
-      const res = await fetch(`/api/covers/editions?book_id=${encodeURIComponent(id)}`)
+      const res = await fetch(requestUrl)
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to load edition covers')
       setEditionState({
         loading: false,
         error: null,
         editions: data.editions || [],
-        workKey: data.work_key || null
+        workKey: data.work_key || null,
+        debug: data.debug || [],
+        requestUrl,
+        fetchedAt: new Date().toISOString()
       })
     } catch (err) {
-      setEditionState({ loading: false, error: err.message, editions: [], workKey: null })
+      setEditionState(prev => ({
+        ...prev,
+        loading: false,
+        error: err.message,
+        editions: [],
+        workKey: null
+      }))
+    }
+  }
+
+  const copyEditionDebugLogs = async () => {
+    setDebugCopyStatus(null)
+    try {
+      const payload = {
+        context: {
+          book_id: Number(id),
+          book_title: book.title || null,
+          book_author: book.author_name || null,
+          book_isbn: book.isbn || null
+        },
+        request_url: editionState.requestUrl,
+        fetched_at: editionState.fetchedAt,
+        result: {
+          work_key: editionState.workKey || null,
+          editions_found: editionState.editions.length,
+          error: editionState.error
+        },
+        debug_events: editionState.debug || []
+      }
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setDebugCopyStatus('Debug logs copied to clipboard.')
+    } catch (err) {
+      setDebugCopyStatus(`Failed to copy debug logs: ${err.message}`)
     }
   }
 
@@ -129,13 +183,28 @@ export default function BookView() {
               Browse edition variants for this book and choose your preferred cover art.
             </div>
           </div>
-          <button
-            onClick={findEditionCovers}
-            disabled={!canLookupEditions || editionState.loading}
-            style={{ ...actionBtn, opacity: !canLookupEditions || editionState.loading ? 0.6 : 1 }}
-          >
-            {editionState.loading ? 'Finding editions...' : 'Find Edition Covers'}
-          </button>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              onClick={copyEditionDebugLogs}
+              disabled={editionState.loading || !editionState.requestUrl}
+              style={{
+                ...actionBtn,
+                background: '#f4c54218',
+                border: '1px solid #f4c54244',
+                color: '#f4c542',
+                opacity: editionState.loading || !editionState.requestUrl ? 0.6 : 1
+              }}
+            >
+              Copy Debug Logs
+            </button>
+            <button
+              onClick={findEditionCovers}
+              disabled={!canLookupEditions || editionState.loading}
+              style={{ ...actionBtn, opacity: !canLookupEditions || editionState.loading ? 0.6 : 1 }}
+            >
+              {editionState.loading ? 'Finding editions...' : 'Find Edition Covers'}
+            </button>
+          </div>
         </div>
 
         {editionState.workKey && (
@@ -146,6 +215,11 @@ export default function BookView() {
 
         {editionState.error && (
           <div style={{ marginTop: 12, color: '#e74c3c', fontSize: 13 }}>{editionState.error}</div>
+        )}
+        {debugCopyStatus && (
+          <div style={{ marginTop: 10, color: debugCopyStatus.startsWith('Failed') ? '#e74c3c' : '#9a9488', fontSize: 12 }}>
+            {debugCopyStatus}
+          </div>
         )}
 
         {!editionState.loading && !editionState.error && editionState.editions.length === 0 && (
