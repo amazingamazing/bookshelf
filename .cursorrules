@@ -16,3 +16,4 @@ Rules:
 - Never use ES modules (import/export) in server/ files, only require()
 - Always test that bracket pairs match on any new functions
 - Always update MEMORY.md when discovering a new issue, starting work on an issue, or completing one. Be concise — minimal edits only, preserve existing formatting.
+- When debugging API lookup pipelines (covers/fan art/import), prefer structured step-by-step debug payloads and provide a single-click copy button in UI when practical.

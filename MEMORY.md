@@ -8,6 +8,7 @@
 - Discover page with AI recommendations
 - Multi-source cover waterfall (Google Books -> Open Library -> LibraryThing -> Internet Archive)
 - Edition browser (Open Library works/editions) with selectable alternate covers
+- Edition resolver now includes title fallback variants (full title, title-only, subtitle-stripped) to handle Open Library misses on long subtitle formats
 - Fan art on series pages (DeviantArt RSS + optional API metadata ranking)
 - Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
 - Fan art debug tools (stage counts + copy debug payload button)
@@ -33,12 +34,14 @@
 - [ ] using inline styling not CSS files
 - [ ] reduce need for DB resets while iterating on imports/cover data
 - [ ] improve fan art source quality/ranking signals and result variety
+- [ ] optional follow-up: filter dead Open Library cover links from edition picker before display
 
 ## Key decisions
 - series are ranked not individual books
 - fan art feature is series-level (not book-level)
 - do not download/store fan art binaries; only store and render external links/pointers
 - keep debug instrumentation visible and easy to copy while tuning fan art retrieval
+- keep cover-edition debug instrumentation visible and one-click copyable from Book View (request context + resolver steps + result summary)
 - prioritize shipping the next feature milestone over deeper relevance iteration right now
 - Shelf Cinema settings are local-first (persisted in localStorage) and control eligibility + playback without storing image binaries
 
