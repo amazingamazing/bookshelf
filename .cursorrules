@@ -15,3 +15,4 @@ Rules:
 - Always check for syntax errors before finishing
 - Never use ES modules (import/export) in server/ files, only require()
 - Always test that bracket pairs match on any new functions
+- Always update MEMORY.md when discovering a new issue, starting work on an issue, or completing one. Be concise — minimal edits only, preserve existing formatting.
