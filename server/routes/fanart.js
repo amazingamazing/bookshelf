@@ -603,9 +603,14 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
     const matches = profile.tokens.reduce((acc, token) => acc + (hayDescription.includes(token) ? 1 : 0), 0);
     return Math.max(best, matches);
   }, 0);
-  if (descMatches >= 4) {
-    score += 0.9;
+  if (descMatches >= 4 && anchorTokenHitCount >= 2) {
+    score += 1.2;
     if (reason === 'broad_keep') reason = `desc_tokens:${descMatches}`;
+  }
+
+  // Require a minimum relevance signal; this drops weak "wheel"/"fire" collisions.
+  if (reason === 'broad_keep' && score < 1.5) {
+    return { pass: false, reason: 'weak_relevance', score: Number(score.toFixed(3)) };
   }
 
   return { pass: true, reason, score: Number(score.toFixed(3)) };

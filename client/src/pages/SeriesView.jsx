@@ -44,6 +44,7 @@ export default function SeriesView() {
     perCreatorCap: 2
   })
   const [debugCopyStatus, setDebugCopyStatus] = useState('')
+  const [showDebug, setShowDebug] = useState(false)
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -158,6 +159,7 @@ export default function SeriesView() {
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
       setDebugCopyStatus('Copied')
+      setShowDebug(prev => !prev)
       setTimeout(() => setDebugCopyStatus(''), 1500)
     } catch {
       setDebugCopyStatus('Copy failed')
@@ -347,24 +349,23 @@ export default function SeriesView() {
           </div>
         )}
         {fanart.debug && (
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: 'pointer', color: '#9a9488', fontSize: 12 }}>Debug details</summary>
-            <div style={{ marginTop: 8, marginBottom: 8 }}>
-              <button onClick={copyDebugDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
-                {debugCopyStatus || 'Copy debug details'}
-              </button>
-            </div>
-            <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
-              <div>Merged candidates: {fanart.debug.stage_counts?.merged ?? 0}</div>
-              <div>Unique links: {fanart.debug.stage_counts?.unique_links ?? 0}</div>
-              <div>Kept by relevance: {fanart.debug.stage_counts?.relevance_kept ?? 0}</div>
-              <div>Rejected by relevance: {fanart.debug.stage_counts?.relevance_rejected ?? 0}</div>
-              <div>Kept after live + quality + time filters: {fanart.debug.stage_counts?.live_kept ?? 0}</div>
-              <div>Rejected by quality floor: {fanart.debug.stage_counts?.quality_rejected ?? 0}</div>
-              <div>Rejected by time window: {fanart.debug.stage_counts?.time_rejected ?? 0}</div>
-              <div>Rejected by AI filter: {fanart.debug.stage_counts?.ai_rejected ?? 0}</div>
-            </div>
-          </details>
+          <div style={{ marginBottom: 12 }}>
+            <button onClick={copyDebugDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
+              {debugCopyStatus || 'Copy debug details'}
+            </button>
+            {showDebug && (
+              <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
+                <div>Merged candidates: {fanart.debug.stage_counts?.merged ?? 0}</div>
+                <div>Unique links: {fanart.debug.stage_counts?.unique_links ?? 0}</div>
+                <div>Kept by relevance: {fanart.debug.stage_counts?.relevance_kept ?? 0}</div>
+                <div>Rejected by relevance: {fanart.debug.stage_counts?.relevance_rejected ?? 0}</div>
+                <div>Kept after live + quality + time filters: {fanart.debug.stage_counts?.live_kept ?? 0}</div>
+                <div>Rejected by quality floor: {fanart.debug.stage_counts?.quality_rejected ?? 0}</div>
+                <div>Rejected by time window: {fanart.debug.stage_counts?.time_rejected ?? 0}</div>
+                <div>Rejected by AI filter: {fanart.debug.stage_counts?.ai_rejected ?? 0}</div>
+              </div>
+            )}
+          </div>
         )}
 
         {fanart.error && (
