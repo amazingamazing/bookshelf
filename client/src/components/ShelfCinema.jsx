@@ -17,6 +17,8 @@ export default function ShelfCinema({ onExit }) {
   const attributionTimerRef = useRef(null)
   const advanceRef = useRef(() => {})
   const requestsRef = useRef(new Set())
+  const failedImageUrlsRef = useRef(new Set())
+  const debugLogRef = useRef([])
 
   const [seriesPool, setSeriesPool] = useState([])
   const [loading, setLoading] = useState(true)
@@ -27,6 +29,17 @@ export default function ShelfCinema({ onExit }) {
   const [previousSlide, setPreviousSlide] = useState(null)
   const [overlayVisible, setOverlayVisible] = useState(true)
   const [attributionVisible, setAttributionVisible] = useState(false)
+  const [debugCopiedAt, setDebugCopiedAt] = useState(0)
+
+  const logDebug = useCallback((event, details = {}) => {
+    const entry = {
+      ts: new Date().toISOString(),
+      event,
+      details
+    }
+    const next = [...debugLogRef.current, entry]
+    debugLogRef.current = next.slice(-80)
+  }, [])
 
   const refreshControls = useCallback(() => {
     const latest = readCinemaControls()
@@ -82,7 +95,15 @@ export default function ShelfCinema({ onExit }) {
         signal: controller.signal
       })
       const data = await response.json()
-      if (!response.ok) return null
+      if (!response.ok) {
+        logDebug('queue_fetch_failed', {
+          seriesId: series.id,
+          seriesName: series.name,
+          status: response.status,
+          error: data?.error || null
+        })
+        return null
+      }
 
       const unique = []
       const seen = new Set()
@@ -101,13 +122,23 @@ export default function ShelfCinema({ onExit }) {
         })
       }
       if (!unique.length) return null
+      logDebug('queue_loaded', {
+        seriesId: series.id,
+        seriesName: series.name,
+        imageCount: unique.length
+      })
       return { series, images: unique }
-    } catch {
+    } catch (err) {
+      logDebug('queue_fetch_error', {
+        seriesId: series.id,
+        seriesName: series.name,
+        message: err?.message || 'Unknown error'
+      })
       return null
     } finally {
       requestsRef.current.delete(controller)
     }
-  }, [])
+  }, [logDebug])
 
   const weightedPickSeries = useCallback((pool) => {
     if (!pool.length) return null
@@ -124,16 +155,29 @@ export default function ShelfCinema({ onExit }) {
   const pickNextSeriesQueue = useCallback(async () => {
     const runtimeControls = refreshControls()
     const allowed = applySeriesRules(seriesPool, runtimeControls.seriesRules)
-    if (!allowed.length) return null
+    if (!allowed.length) {
+      logDebug('no_allowed_series_after_rules', {
+        seriesPoolSize: seriesPool.length,
+        seriesRulesCount: Object.keys(runtimeControls.seriesRules || {}).length
+      })
+      return null
+    }
 
     for (let attempts = 0; attempts < allowed.length * 2; attempts += 1) {
       const picked = weightedPickSeries(allowed)
       if (!picked) break
+      logDebug('series_picked', {
+        attempt: attempts + 1,
+        seriesId: picked.id,
+        seriesName: picked.name,
+        tier: picked.tier
+      })
       const queue = await fetchSeriesQueue(picked, runtimeControls)
       if (queue?.images?.length) return queue
     }
+    logDebug('no_queue_from_any_pick', { allowedCount: allowed.length })
     return null
-  }, [fetchSeriesQueue, refreshControls, seriesPool, weightedPickSeries])
+  }, [fetchSeriesQueue, logDebug, refreshControls, seriesPool, weightedPickSeries])
 
   const pushSlide = useCallback((image, series) => {
     const runtimeControls = refreshControls()
@@ -185,6 +229,9 @@ export default function ShelfCinema({ onExit }) {
       if (!mountedRef.current) return
       if (!nextQueue) {
         setError('No eligible series with images available for Shelf Cinema.')
+        logDebug('advance_no_next_queue', {
+          seriesPoolSize: seriesPool.length
+        })
         return
       }
       queueRef.current = { series: nextQueue.series, images: nextQueue.images, cursor: 0 }
@@ -193,11 +240,69 @@ export default function ShelfCinema({ onExit }) {
     }
     if (!nextImage) {
       setError('Could not load the next image.')
+      logDebug('advance_no_next_image', {})
       return
     }
     setError(null)
+    logDebug('slide_pushed', {
+      seriesId: series?.id || null,
+      imageUrl: nextImage.url,
+      source: nextImage.source
+    })
     pushSlide(nextImage, series)
-  }, [pickNextSeriesQueue, pullNextImageFromQueue, pushSlide])
+  }, [logDebug, pickNextSeriesQueue, pullNextImageFromQueue, pushSlide, seriesPool.length])
+
+  const handleImageError = useCallback((url, layer) => {
+    const safeUrl = String(url || '')
+    if (!safeUrl || failedImageUrlsRef.current.has(safeUrl)) return
+    failedImageUrlsRef.current.add(safeUrl)
+    logDebug('image_load_error', { url: safeUrl, layer })
+    clearTimer(timerRef)
+    setError('Some images failed to load. Skipping broken image...')
+    setTimeout(() => {
+      if (!mountedRef.current) return
+      setError(null)
+      advanceRef.current()
+    }, 80)
+  }, [logDebug])
+
+  const copyDebugSnapshot = useCallback(async () => {
+    const queue = queueRef.current
+    const snapshot = {
+      timestamp: new Date().toISOString(),
+      currentSeries,
+      currentSlide: currentSlide ? {
+        key: currentSlide.key,
+        image: currentSlide.image,
+        holdMs: currentSlide.holdMs,
+        crossfadeMs: currentSlide.crossfadeMs
+      } : null,
+      queue: {
+        series: queue.series,
+        cursor: queue.cursor,
+        imageCount: Array.isArray(queue.images) ? queue.images.length : 0,
+        nextImageUrl: queue.images?.[queue.cursor]?.url || null
+      },
+      controls: controlsRef.current,
+      state: {
+        loading,
+        error,
+        seriesPoolSize: seriesPool.length,
+        allowedSeriesSize: applySeriesRules(seriesPool, controlsRef.current.seriesRules).length,
+        activeRequests: requestsRef.current.size,
+        failedImageCount: failedImageUrlsRef.current.size
+      },
+      recentLog: debugLogRef.current
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2))
+      setDebugCopiedAt(Date.now())
+      logDebug('debug_snapshot_copied', {})
+    } catch {
+      setError('Could not copy debug snapshot to clipboard.')
+      logDebug('debug_snapshot_copy_failed', {})
+    }
+  }, [currentSeries, currentSlide, error, loading, logDebug, seriesPool])
 
   useEffect(() => {
     advanceRef.current = advance
@@ -207,6 +312,7 @@ export default function ShelfCinema({ onExit }) {
     mountedRef.current = true
     scheduleOverlayAutoHide()
     refreshControls()
+    logDebug('cinema_mount', {})
 
     const onKeyDown = (event) => {
       if (event.key === 'Escape') handleExit()
@@ -237,8 +343,16 @@ export default function ShelfCinema({ onExit }) {
           }))
           .filter(s => s.book_count > 0 && Number(TIER_WEIGHTS[s.tier] || 0) > 0)
         setSeriesPool(eligible)
+        logDebug('series_loaded', {
+          totalFromApi: Array.isArray(data) ? data.length : 0,
+          eligibleCount: eligible.length
+        })
+        if (!eligible.length) {
+          setError('No ranked (S/A/B/C/D) library series found for Shelf Cinema.')
+        }
       } catch (err) {
         setError(err.message)
+        logDebug('series_load_error', { message: err.message })
       } finally {
         setLoading(false)
       }
@@ -275,7 +389,7 @@ export default function ShelfCinema({ onExit }) {
       `}</style>
 
       {renderSlide(previousSlide, true)}
-      {renderSlide(currentSlide, false)}
+      {renderSlide(currentSlide, false, handleImageError)}
 
       {loading && !currentSlide && (
         <div style={styles.centerMessage}>Loading Shelf Cinema...</div>
@@ -294,6 +408,16 @@ export default function ShelfCinema({ onExit }) {
           title="Exit experience"
         >
           x
+        </button>
+        <button
+          onClick={(event) => {
+            event.stopPropagation()
+            copyDebugSnapshot()
+          }}
+          style={styles.debugBtn}
+          title="Copy Shelf Cinema debug snapshot"
+        >
+          {Date.now() - debugCopiedAt < 2500 ? 'Copied' : 'Copy Debug'}
         </button>
 
         <div style={styles.bottomLeft}>
@@ -344,7 +468,7 @@ export default function ShelfCinema({ onExit }) {
   )
 }
 
-function renderSlide(slide, isPrevious) {
+function renderSlide(slide, isPrevious, onImageError) {
   if (!slide) return null
   const opacity = isPrevious ? (slide.fadingOut ? 0 : 1) : 1
   const transition = `opacity ${slide.crossfadeMs}ms ease`
@@ -362,6 +486,7 @@ function renderSlide(slide, isPrevious) {
         <img
           src={slide.image.url}
           alt=""
+          onError={() => onImageError?.(slide.image.url, 'backdrop')}
           style={styles.backdropImage}
         />
       </div>
@@ -370,6 +495,7 @@ function renderSlide(slide, isPrevious) {
         <img
           src={slide.image.url}
           alt={slide.image.title || 'Shelf cinema image'}
+          onError={() => onImageError?.(slide.image.url, 'foreground')}
           style={{
             ...styles.foregroundImage,
             animation: `shelfCinemaForegroundKenBurns ${slide.holdMs}ms linear forwards`,
@@ -478,6 +604,18 @@ const styles = {
     borderRadius: 16,
     cursor: 'pointer',
     fontSize: 15
+  },
+  debugBtn: {
+    position: 'absolute',
+    top: 16,
+    right: 56,
+    border: '1px solid rgba(255,255,255,0.35)',
+    background: 'rgba(26,24,20,0.7)',
+    color: '#e8e4dc',
+    borderRadius: 999,
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontSize: 12
   },
   bottomLeft: {
     position: 'absolute',
