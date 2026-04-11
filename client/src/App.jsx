@@ -7,6 +7,7 @@ import TierList from './pages/TierList'
 import Import from './pages/Import'
 import Discover from './pages/Discover'
 import ShelfCinema from './components/ShelfCinema'
+import CinemaControl from './pages/CinemaControl'
 
 const styles = {
   app: { minHeight: '100vh', background: '#0f0e0c' },
@@ -61,6 +62,7 @@ export default function App() {
             ['/', 'Bookshelf'],
             ['/tiers', 'Tier List'],
             ['/discover', 'Discover'],
+            ['/cinema-control', 'Cinema Control'],
             ['/import', 'Import']
           ].map(([to, label]) => (
             <NavLink key={to} to={to} end={to === '/'}
@@ -79,6 +81,7 @@ export default function App() {
           <Route path="/book/:id" element={<BookView />} />
           <Route path="/tiers" element={<TierList />} />
           <Route path="/discover" element={<Discover />} />
+          <Route path="/cinema-control" element={<CinemaControl />} />
           <Route path="/import" element={<Import />} />
         </Routes>
         {cinemaOpen && <ShelfCinema onExit={() => setCinemaOpen(false)} />}

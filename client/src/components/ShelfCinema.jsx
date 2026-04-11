@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { readCinemaControls } from '../lib/cinemaControls'
 
 const FANART_PREFS_KEY = 'bookshelf:fanart-prefs:v1'
 const TIERS = ['S', 'A', 'B', 'C', 'D']
@@ -58,15 +59,54 @@ function shuffleTail(items) {
   return [first, ...copy]
 }
 
-function createVisual(image, seed) {
+function createVisual(image, seed, baseDurationSec) {
+  const durationMin = Math.max(3000, (baseDurationSec - 2) * 1000)
+  const durationMax = Math.max(durationMin, (baseDurationSec + 2) * 1000)
   return {
     key: `${image.url}::${seed}::${Date.now()}`,
     image,
-    durationMs: randomInt(6000, 10000),
+    durationMs: randomInt(durationMin, durationMax),
     driftX: `${(Math.random() * 6 - 3).toFixed(2)}%`,
     driftY: `${(Math.random() * 6 - 3).toFixed(2)}%`,
     fadingOut: false
   }
+}
+
+function filterSeriesByControlRules(allSeries, controls) {
+  const safeSeries = Array.isArray(allSeries) ? allSeries : []
+  const safeControls = controls || {}
+  const seriesRules = safeControls.seriesRules || {}
+  const genreRules = safeControls.genreRules || {}
+  const whitelistedSeriesIds = new Set(
+    Object.entries(seriesRules)
+      .filter(([, mode]) => mode === 'whitelist')
+      .map(([id]) => String(id))
+  )
+  const blacklistedSeriesIds = new Set(
+    Object.entries(seriesRules)
+      .filter(([, mode]) => mode === 'blacklist')
+      .map(([id]) => String(id))
+  )
+  const whitelistedGenres = new Set(
+    Object.entries(genreRules)
+      .filter(([, mode]) => mode === 'whitelist')
+      .map(([name]) => String(name).toLowerCase())
+  )
+  const blacklistedGenres = new Set(
+    Object.entries(genreRules)
+      .filter(([, mode]) => mode === 'blacklist')
+      .map(([name]) => String(name).toLowerCase())
+  )
+
+  return safeSeries.filter(series => {
+    const id = String(series.id)
+    const seriesGenres = (series.genres || []).map(g => String(g).toLowerCase())
+    if (blacklistedSeriesIds.has(id)) return false
+    if (seriesGenres.some(g => blacklistedGenres.has(g))) return false
+    if (whitelistedSeriesIds.size > 0 && !whitelistedSeriesIds.has(id)) return false
+    if (whitelistedGenres.size > 0 && !seriesGenres.some(g => whitelistedGenres.has(g))) return false
+    return true
+  })
 }
 
 export default function ShelfCinema({ onExit }) {
@@ -86,6 +126,7 @@ export default function ShelfCinema({ onExit }) {
   const cursorRef = useRef(0)
 
   const [seriesPool, setSeriesPool] = useState([])
+  const [cinemaControls, setCinemaControls] = useState(() => readCinemaControls())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [overlayVisible, setOverlayVisible] = useState(true)
@@ -131,6 +172,7 @@ export default function ShelfCinema({ onExit }) {
   const fetchPackForSeries = useCallback(async (series) => {
     const prefs = readFanartPrefs()
     const controller = new AbortController()
+    const targetImageCount = Math.max(3, Math.min(15, Number(cinemaControls.imageCount) || 10))
     requestControllersRef.current.add(controller)
     try {
       const params = new URLSearchParams({
@@ -139,7 +181,8 @@ export default function ShelfCinema({ onExit }) {
         sort_mode: 'popular',
         time_window: 'all',
         exclude_ai: 'true',
-        per_creator_cap: '2'
+        per_creator_cap: '2',
+        image_limit: String(targetImageCount)
       })
       const res = await fetch(`/api/cinema/series-images/${series.id}?${params.toString()}`, {
         signal: controller.signal
@@ -163,14 +206,14 @@ export default function ShelfCinema({ onExit }) {
         })
       }
       if (deduped.length < 3) return null
-      const selected = shuffleTail(deduped).slice(0, 15)
-      return { series, images: selected.slice(0, Math.max(6, Math.min(15, selected.length))) }
+      const selected = shuffleTail(deduped).slice(0, targetImageCount)
+      return { series, images: selected.slice(0, Math.max(3, Math.min(targetImageCount, selected.length))) }
     } catch {
       return null
     } finally {
       requestControllersRef.current.delete(controller)
     }
-  }, [])
+  }, [cinemaControls.imageCount])
 
   const loadPackByWeightedPick = useCallback(async (excludedSeriesId) => {
     if (!seriesPool.length) return null
@@ -206,7 +249,7 @@ export default function ShelfCinema({ onExit }) {
           clearTimer(leftFadeRef)
           leftFadeRef.current = setTimeout(() => setLeftPrevious(null), FADE_MS + 80)
         }
-        return createVisual(next, seed)
+        return createVisual(next, seed, cinemaControls.imageDurationSec || 8)
       })
       setLeftIndex(seed)
       return
@@ -222,10 +265,10 @@ export default function ShelfCinema({ onExit }) {
         clearTimer(rightFadeRef)
         rightFadeRef.current = setTimeout(() => setRightPrevious(null), FADE_MS + 80)
       }
-      return createVisual(next, seed)
+      return createVisual(next, seed, cinemaControls.imageDurationSec || 8)
     })
     setRightIndex(seed)
-  }, [])
+  }, [cinemaControls.imageDurationSec])
 
   const switchToNextPack = useCallback(async () => {
     if (switchingPackRef.current) return
@@ -304,14 +347,15 @@ export default function ShelfCinema({ onExit }) {
         const res = await fetch('/api/series')
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || 'Failed to load series')
-        const ranked = (data || [])
+        const ranked = filterSeriesByControlRules((data || [])
           .filter(series => TIERS.includes(series.tier))
           .map(series => ({
             id: Number(series.id),
             name: series.name,
             author_name: series.author_name,
-            tier: series.tier
-          }))
+            tier: series.tier,
+            genres: series.genres || []
+          })), cinemaControls)
         setSeriesPool(ranked)
       } catch (err) {
         setError(err.message)
@@ -328,7 +372,7 @@ export default function ShelfCinema({ onExit }) {
       for (const controller of requestControllersRef.current) controller.abort()
       requestControllersRef.current.clear()
     }
-  }, [clearAllTimers, handleExit, setOverlayVisibleWithTimeout])
+  }, [cinemaControls, clearAllTimers, handleExit, setOverlayVisibleWithTimeout])
 
   useEffect(() => {
     if (!seriesPool.length || currentPack) return

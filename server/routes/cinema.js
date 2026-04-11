@@ -13,7 +13,8 @@ router.get('/series-images/:seriesId', async (req, res) => {
       exclude_ai: excludeAiRaw = 'true',
       sort_mode: sortModeRaw = 'popular',
       time_window: timeWindowRaw = 'all',
-      per_creator_cap: perCreatorCapRaw = '2'
+      per_creator_cap: perCreatorCapRaw = '2',
+      image_limit: imageLimitRaw = '10'
     } = req.query;
 
     const allowMature = parseBoolean(allowMatureRaw, false);
@@ -22,6 +23,7 @@ router.get('/series-images/:seriesId', async (req, res) => {
     const sortMode = normalizeSortMode(sortModeRaw);
     const timeWindow = normalizeTimeWindow(timeWindowRaw);
     const perCreatorCap = Math.max(1, Math.min(5, Number(perCreatorCapRaw) || 2));
+    const imageLimit = Math.max(3, Math.min(30, Number(imageLimitRaw) || 10));
 
     const { rows: seriesRows } = await pool.query(`
       SELECT
@@ -82,8 +84,8 @@ router.get('/series-images/:seriesId', async (req, res) => {
       });
     }
 
-    if (images.length < 6) {
-      const supplements = await fetchSupplementalCovers(bookRows, 8);
+    if (images.length < imageLimit) {
+      const supplements = await fetchSupplementalCovers(bookRows, Math.max(8, imageLimit));
       for (const supplement of supplements) pushImage(images, seen, supplement);
     }
 
@@ -93,7 +95,8 @@ router.get('/series-images/:seriesId', async (req, res) => {
       excludeAi,
       sortMode,
       timeWindow,
-      perCreatorCap
+      perCreatorCap,
+      imageLimit
     });
     for (const item of fanartItems) {
       pushImage(images, seen, {
@@ -106,7 +109,7 @@ router.get('/series-images/:seriesId', async (req, res) => {
       });
     }
 
-    const cappedImages = images.slice(0, 18);
+    const cappedImages = images.slice(0, imageLimit);
     res.json({
       series: {
         id: series.id,
@@ -218,7 +221,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, options) {
 
   const params = new URLSearchParams({
     series_id: String(seriesId),
-    limit: '12',
+    limit: String(Math.max(8, Math.min(20, options.imageLimit || 10))),
     allow_mature: options.allowMature ? 'true' : 'false',
     min_edge: String(options.minEdge),
     sort_mode: options.sortMode,
