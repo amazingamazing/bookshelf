@@ -560,6 +560,7 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
     ...(item.tags || []),
     item.creator
   ].join(' '));
+  const hayTitleTagsLoose = normalizeLooseText(hayTitleTags);
   const hayDescription = normalizeSearchText([
     item.description_text
   ].join(' '));
@@ -567,34 +568,44 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
     .filter(token => token.length >= 4)
     .filter(token => !isNoiseToken(token));
   const anchorTokenHitCount = anchorTokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
+  const anchorStrongHitCount = anchorTokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) && !isWeakFranchiseToken(token) ? 1 : 0), 0);
   let score = 0;
-  let reason = 'broad_keep';
+  let reason = 'weak_signal';
+  let hasStrongSignal = false;
 
   // First, prefer direct phrase anchoring against the intended series/book strings.
   for (const anchor of (anchorPhrases || [])) {
     const normalizedAnchor = normalizeSearchText(anchor);
+    const looseAnchor = normalizeLooseText(anchor);
     if (!normalizedAnchor) continue;
-    if (hayTitleTags.includes(normalizedAnchor)) {
+    if (hayTitleTags.includes(normalizedAnchor) || (looseAnchor && hayTitleTagsLoose.includes(looseAnchor))) {
       score += 4.5;
       reason = `anchor:${anchor}`;
+      hasStrongSignal = true;
       break;
     }
   }
 
   score += Math.min(3, anchorTokenHitCount) * 0.9;
+  if (anchorStrongHitCount >= 1) score += 0.6;
 
   for (const profile of profiles) {
     const phrase = normalizeSearchText(profile.phrase || '');
-    if (phrase && phrase.length >= 8 && hayTitleTags.includes(phrase)) {
+    const loosePhrase = normalizeLooseText(profile.phrase || '');
+    if (phrase && phrase.length >= 8 && (hayTitleTags.includes(phrase) || (loosePhrase && hayTitleTagsLoose.includes(loosePhrase)))) {
       score += 3;
       reason = `phrase:${profile.phrase}`;
+      hasStrongSignal = true;
       break;
     }
 
-    const matchesInTitleTags = profile.tokens.reduce((acc, token) => acc + (hayTitleTags.includes(token) ? 1 : 0), 0);
+    const matchedTokens = profile.tokens.filter(token => hayTitleTags.includes(token));
+    const matchesInTitleTags = matchedTokens.length;
+    const strongMatchesInTitleTags = matchedTokens.filter(token => !isWeakFranchiseToken(token)).length;
     if (matchesInTitleTags >= 2) {
       score += Math.min(3, matchesInTitleTags) * 0.8;
       reason = `title_tokens:${matchesInTitleTags}`;
+      if (strongMatchesInTitleTags >= 1) hasStrongSignal = true;
     }
   }
 
@@ -605,11 +616,16 @@ function evaluateRelevance(item, profiles, anchorPhrases) {
   }, 0);
   if (descMatches >= 4 && anchorTokenHitCount >= 2) {
     score += 1.2;
-    if (reason === 'broad_keep') reason = `desc_tokens:${descMatches}`;
+    if (reason === 'weak_signal') reason = `desc_tokens:${descMatches}`;
   }
 
-  // Require a minimum relevance signal; this drops weak "wheel"/"fire" collisions.
-  if (reason === 'broad_keep' && score < 1.5) {
+  // Require at least one meaningful anchor/profile signal.
+  if (!hasStrongSignal) {
+    return { pass: false, reason: 'weak_relevance', score: Number(score.toFixed(3)) };
+  }
+
+  // Require a minimum relevance score even for strong-ish matches.
+  if (score < 2.2) {
     return { pass: false, reason: 'weak_relevance', score: Number(score.toFixed(3)) };
   }
 
@@ -624,12 +640,26 @@ function normalizeSearchText(value) {
   return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+function normalizeLooseText(value) {
+  return normalizeSearchText(value)
+    .split(' ')
+    .filter(Boolean)
+    .filter(token => !['a', 'an', 'the'].includes(token))
+    .join(' ');
+}
+
 function isNoiseToken(token) {
   return [
     'fan', 'art', 'series', 'book', 'books', 'review', 'movie', 'pdf',
     'the', 'and', 'with', 'from', 'for', 'this', 'that', 'one', 'last',
     'hosts', 'morning'
   ].includes(token);
+}
+
+function isWeakFranchiseToken(token) {
+  return [
+    'wheel', 'time', 'ice', 'fire', 'song', 'world'
+  ].includes(String(token || '').toLowerCase());
 }
 
 function buildRelevanceProfile(query) {

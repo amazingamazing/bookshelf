@@ -11,11 +11,13 @@
 - Fan art on series pages (DeviantArt RSS + optional API metadata ranking)
 - Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
 - Fan art debug tools (stage counts + copy debug payload button)
+- Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance)
 - Deployed on Render
 
 ## Current issues
-- [ ] tighten fan art relevance filtering to reduce unrelated results
-- [ ] tune creator diversity cap behavior to avoid over-collapsing result count
+- [ ] Wheel of Time still needs better relevance precision (tail results can drift off-topic)
+- [ ] continue tuning relevance weighting and hard-negative filtering (reduce false positives without starving results)
+- [ ] improve creator extraction consistency from DeviantArt links/metadata
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript
 - [ ] using inline styling not CSS files
@@ -27,3 +29,4 @@
 - series are ranked not individual books
 - fan art feature is series-level (not book-level)
 - do not download/store fan art binaries; only store and render external links/pointers
+- keep debug instrumentation visible and easy to copy while tuning fan art retrieval
