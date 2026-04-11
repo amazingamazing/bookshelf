@@ -126,13 +126,25 @@ export default function ShelfCinema({ onExit }) {
     return safeUrls.filter((_, index) => results[index])
   }, [preloadImage])
 
-  const fetchSeriesQueue = useCallback(async (series, runtimeControls) => {
+  const fetchSeriesQueue = useCallback(async (series, runtimeControls, options = {}) => {
     const controller = new AbortController()
     requestsRef.current.add(controller)
     try {
+      const fanartEnabled = options.forceFanartEnabled == null
+        ? runtimeControls.fanartEnabled
+        : Boolean(options.forceFanartEnabled)
+      const fanartPerCover = options.forceFanartPerCover == null
+        ? runtimeControls.fanartPerCover
+        : options.forceFanartPerCover
       const params = new URLSearchParams({
-        fanart_enabled: runtimeControls.fanartEnabled ? 'true' : 'false',
-        fanart_per_cover: runtimeControls.fanartPerCover
+        fanart_enabled: fanartEnabled ? 'true' : 'false',
+        fanart_per_cover: String(fanartPerCover)
+      })
+      logDebug('queue_fetch_start', {
+        seriesId: series.id,
+        seriesName: series.name,
+        fanartEnabled,
+        fanartPerCover
       })
       const response = await fetch(`/api/cinema/series-images/${series.id}?${params.toString()}`, {
         signal: controller.signal
@@ -352,6 +364,29 @@ export default function ShelfCinema({ onExit }) {
     prefetchNextQueueRef.current = prefetchNextQueue
   }, [prefetchNextQueue])
 
+  const hydrateCurrentSeriesWithFanart = useCallback(async (series, runtimeControls) => {
+    if (!runtimeControls.fanartEnabled) return
+    const fullQueue = await fetchSeriesQueue(series, runtimeControls, {
+      forceFanartEnabled: true
+    })
+    if (!mountedRef.current || !fullQueue?.images?.length) return
+    const currentQueue = queueRef.current
+    if (!currentQueue?.series || Number(currentQueue.series.id) !== Number(series.id)) return
+    const cursor = Math.max(1, Number(currentQueue.cursor) || 1)
+    queueRef.current = {
+      series: fullQueue.series,
+      images: fullQueue.images,
+      cursor: Math.min(cursor, Math.max(0, fullQueue.images.length - 1))
+    }
+    logDebug('queue_hydrated_with_fanart', {
+      seriesId: series.id,
+      oldImageCount: currentQueue.images.length,
+      newImageCount: fullQueue.images.length,
+      cursor
+    })
+    preloadImages(fullQueue.images.slice(cursor, cursor + 3).map(item => item.url)).then(() => {})
+  }, [fetchSeriesQueue, logDebug, preloadImages])
+
   const handleImageError = useCallback((url, layer) => {
     const safeUrl = String(url || '')
     if (!safeUrl || failedImageUrlsRef.current.has(safeUrl)) return
@@ -471,7 +506,23 @@ export default function ShelfCinema({ onExit }) {
   useEffect(() => {
     if (!seriesPool.length || currentSlide) return
     ;(async () => {
-      const startupQueue = prefetchedQueueRef.current || await pickNextSeriesQueue()
+      const runtimeControls = refreshControls()
+      const allowed = applySeriesRules(seriesPool, runtimeControls.seriesRules)
+      if (!allowed.length) {
+        setError('No eligible series with images available for Shelf Cinema.')
+        return
+      }
+      const firstSeries = weightedPickSeries(allowed)
+      let startupQueue = null
+      if (firstSeries) {
+        startupQueue = await fetchSeriesQueue(firstSeries, runtimeControls, {
+          forceFanartEnabled: false,
+          forceFanartPerCover: 0
+        })
+      }
+      if (!startupQueue?.images?.length) {
+        startupQueue = prefetchedQueueRef.current || await pickNextSeriesQueue()
+      }
       if (!mountedRef.current) return
       if (!startupQueue?.images?.length) {
         setError('No eligible series with images available for Shelf Cinema.')
@@ -492,8 +543,9 @@ export default function ShelfCinema({ onExit }) {
       pushSlide(firstImage, startupQueue.series)
       prefetchUpcomingFromCurrentQueue()
       prefetchNextQueue(startupQueue.series.id)
+      hydrateCurrentSeriesWithFanart(startupQueue.series, runtimeControls)
     })()
-  }, [currentSlide, pickNextSeriesQueue, prefetchNextQueue, prefetchUpcomingFromCurrentQueue, preloadImages, pullNextImageFromQueue, pushSlide, rememberFanartImage, seriesPool])
+  }, [currentSlide, fetchSeriesQueue, hydrateCurrentSeriesWithFanart, pickNextSeriesQueue, prefetchNextQueue, prefetchUpcomingFromCurrentQueue, preloadImages, pullNextImageFromQueue, pushSlide, refreshControls, rememberFanartImage, seriesPool, weightedPickSeries])
 
   return (
     <div
