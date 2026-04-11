@@ -46,28 +46,18 @@ function weightedPickSeries(seriesList, excludedSeriesId, avoidIds) {
   return candidates[candidates.length - 1]
 }
 
-function shuffleTail(items) {
-  if (items.length <= 1) return items
-  const [first, ...rest] = items
-  const copy = [...rest]
-  for (let i = copy.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1))
-    const tmp = copy[i]
-    copy[i] = copy[j]
-    copy[j] = tmp
-  }
-  return [first, ...copy]
-}
-
 function createVisual(image, seed, baseDurationSec) {
   const durationMin = Math.max(3000, (baseDurationSec - 2) * 1000)
   const durationMax = Math.max(durationMin, (baseDurationSec + 2) * 1000)
+  const isFanart = image?.kind === 'fanart' || image?.source === 'fanart'
+  const endScale = isFanart ? 1.05 : 1.02
   return {
     key: `${image.url}::${seed}::${Date.now()}`,
     image,
     durationMs: randomInt(durationMin, durationMax),
     driftX: `${(Math.random() * 6 - 3).toFixed(2)}%`,
     driftY: `${(Math.random() * 6 - 3).toFixed(2)}%`,
+    endScale,
     fadingOut: false
   }
 }
@@ -198,6 +188,7 @@ export default function ShelfCinema({ onExit }) {
         seen.add(url)
         deduped.push({
           url,
+          kind: image.kind || (image.source === 'fanart' ? 'fanart' : 'cover'),
           source: image.source || 'unknown',
           title: image.title || series.name,
           creator: image.creator || null,
@@ -206,7 +197,7 @@ export default function ShelfCinema({ onExit }) {
         })
       }
       if (deduped.length < 3) return null
-      const selected = shuffleTail(deduped).slice(0, targetImageCount)
+      const selected = deduped.slice(0, targetImageCount)
       return { series, images: selected.slice(0, Math.max(3, Math.min(targetImageCount, selected.length))) }
     } catch {
       return null
@@ -478,7 +469,8 @@ export default function ShelfCinema({ onExit }) {
             animation: `shelfCinemaKenBurns ${visual.durationMs}ms linear forwards`,
             transformOrigin: 'center center',
             '--drift-x': visual.driftX,
-            '--drift-y': visual.driftY
+            '--drift-y': visual.driftY,
+            '--end-scale': String(visual.endScale || 1.03)
           }}
         />
       </div>
@@ -496,7 +488,7 @@ export default function ShelfCinema({ onExit }) {
       <style>{`
         @keyframes shelfCinemaKenBurns {
           from { transform: translate3d(0, 0, 0) scale(1); }
-          to { transform: translate3d(var(--drift-x), var(--drift-y), 0) scale(1.08); }
+          to { transform: translate3d(var(--drift-x), var(--drift-y), 0) scale(var(--end-scale)); }
         }
       `}</style>
 

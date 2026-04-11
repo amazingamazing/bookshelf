@@ -50,12 +50,14 @@ router.get('/series-images/:seriesId', async (req, res) => {
 
     const coverCandidates = bookIds.length ? await fetchCoverCandidates(bookIds) : [];
 
-    const images = [];
+    const coverImages = [];
+    const fanartImages = [];
     const seen = new Set();
 
-    pushImage(images, seen, {
+    pushImage(coverImages, seen, {
       url: series.cover_url,
       source: 'series_cover',
+      kind: 'cover',
       title: series.name,
       creator: null,
       creator_url: null,
@@ -63,9 +65,10 @@ router.get('/series-images/:seriesId', async (req, res) => {
     });
 
     for (const book of bookRows) {
-      pushImage(images, seen, {
+      pushImage(coverImages, seen, {
         url: book.cover_url,
         source: 'book_cover',
+        kind: 'cover',
         title: book.title,
         creator: null,
         creator_url: null,
@@ -74,9 +77,10 @@ router.get('/series-images/:seriesId', async (req, res) => {
     }
 
     for (const candidate of coverCandidates) {
-      pushImage(images, seen, {
+      pushImage(coverImages, seen, {
         url: candidate.cover_url,
         source: candidate.source || 'candidate_cover',
+        kind: 'cover',
         title: candidate.book_title || series.name,
         creator: null,
         creator_url: null,
@@ -84,9 +88,9 @@ router.get('/series-images/:seriesId', async (req, res) => {
       });
     }
 
-    if (images.length < imageLimit) {
+    if (coverImages.length < imageLimit) {
       const supplements = await fetchSupplementalCovers(bookRows, Math.max(8, imageLimit));
-      for (const supplement of supplements) pushImage(images, seen, supplement);
+      for (const supplement of supplements) pushImage(coverImages, seen, supplement);
     }
 
     const fanartItems = await fetchSeriesFanartViaExistingEndpoint(req, seriesId, {
@@ -99,9 +103,10 @@ router.get('/series-images/:seriesId', async (req, res) => {
       imageLimit
     });
     for (const item of fanartItems) {
-      pushImage(images, seen, {
+      pushImage(fanartImages, seen, {
         url: item.image_url,
         source: 'fanart',
+        kind: 'fanart',
         title: item.title || series.name,
         creator: item.creator || null,
         creator_url: deriveDeviantartArtistUrl(item),
@@ -109,7 +114,7 @@ router.get('/series-images/:seriesId', async (req, res) => {
       });
     }
 
-    const cappedImages = images.slice(0, imageLimit);
+    const cappedImages = composeCinemaSequence(coverImages, fanartImages, imageLimit);
     res.json({
       series: {
         id: series.id,
@@ -182,6 +187,7 @@ async function findOpenLibraryCoverByIsbn(isbn) {
     return {
       url: coverUrl,
       source: 'open_library_isbn',
+      kind: 'cover',
       title: row?.title || null,
       creator: null,
       creator_url: null,
@@ -204,6 +210,7 @@ async function findGoogleBooksCoverByIsbn(isbn) {
     return {
       url: toHttps(coverUrl),
       source: 'google_books_isbn',
+      kind: 'cover',
       title: item?.volumeInfo?.title || null,
       creator: null,
       creator_url: null,
@@ -221,7 +228,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, options) {
 
   const params = new URLSearchParams({
     series_id: String(seriesId),
-    limit: String(Math.max(8, Math.min(20, options.imageLimit || 10))),
+    limit: String(Math.max(12, Math.min(48, (options.imageLimit || 10) * 4))),
     allow_mature: options.allowMature ? 'true' : 'false',
     min_edge: String(options.minEdge),
     sort_mode: options.sortMode,
@@ -249,11 +256,61 @@ function pushImage(target, seen, image) {
   target.push({
     url,
     source: image.source || 'unknown',
+    kind: image.kind || (image.source === 'fanart' ? 'fanart' : 'cover'),
     title: image.title || null,
     creator: image.creator || null,
     creator_url: image.creator_url || null,
     external_link: image.external_link || null
   });
+}
+
+function composeCinemaSequence(coverImages, fanartImages, imageLimit) {
+  const covers = Array.isArray(coverImages) ? coverImages : [];
+  const fanarts = Array.isArray(fanartImages) ? fanartImages : [];
+  const out = [];
+  if (!covers.length && !fanarts.length) return out;
+  if (!fanarts.length) return covers.slice(0, imageLimit);
+  if (!covers.length) return fanarts.slice(0, imageLimit);
+
+  let fanartCursor = 0;
+  let fanartDirection = 1;
+
+  for (const cover of covers) {
+    if (out.length >= imageLimit) break;
+    out.push(cover);
+    if (out.length >= imageLimit) break;
+
+    const burst = randomInt(1, 3);
+    for (let i = 0; i < burst; i += 1) {
+      if (out.length >= imageLimit) break;
+      const fanart = fanarts[fanartCursor];
+      if (!fanart) break;
+      out.push(fanart);
+      fanartCursor += fanartDirection;
+      if (fanartCursor >= fanarts.length) {
+        fanartCursor = Math.max(0, fanarts.length - 2);
+        fanartDirection = -1;
+      } else if (fanartCursor < 0) {
+        fanartCursor = fanarts.length > 1 ? 1 : 0;
+        fanartDirection = 1;
+      }
+    }
+  }
+
+  if (out.length < imageLimit) {
+    for (const fanart of fanarts) {
+      if (out.length >= imageLimit) break;
+      out.push(fanart);
+    }
+  }
+  if (out.length < imageLimit) {
+    for (const cover of covers) {
+      if (out.length >= imageLimit) break;
+      out.push(cover);
+    }
+  }
+
+  return out.slice(0, imageLimit);
 }
 
 function deriveDeviantartArtistUrl(item) {
@@ -294,6 +351,13 @@ function normalizeTimeWindow(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (['1y', '3y', '5y', '10y', 'all'].includes(normalized)) return normalized;
   return 'all';
+}
+
+function randomInt(min, max) {
+  const lo = Math.ceil(Number(min) || 0);
+  const hi = Math.floor(Number(max) || 0);
+  if (hi <= lo) return lo;
+  return Math.floor(Math.random() * (hi - lo + 1)) + lo;
 }
 
 module.exports = router;
