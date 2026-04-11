@@ -329,27 +329,62 @@ async function resolveOpenLibraryWork({ isbn, title, author, logDebug = () => {}
     logDebug('title_search_skipped', { reason: 'missing_title' });
     return null;
   }
-  const q = author ? `${title} ${author}` : title;
-  const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=10&fields=key,title,author_name`);
-  logDebug('title_search_attempted', { query: q, status: res.status });
-  if (!res.ok) return null;
-  const data = await res.json();
+
   const authorLast = (author || '').toLowerCase().split(' ').filter(Boolean).slice(-1)[0];
-  const docs = data.docs || [];
-  logDebug('title_search_results', {
-    docs_count: docs.length,
-    top_hits: docs.slice(0, 5).map(doc => ({
-      key: doc.key || null,
-      title: doc.title || null,
-      author_name: (doc.author_name || []).slice(0, 2)
-    }))
-  });
-  const best = (data.docs || []).find(doc =>
-    doc.key?.startsWith('/works/') &&
-    (!authorLast || doc.author_name?.some(name => String(name).toLowerCase().includes(authorLast)))
-  ) || (data.docs || []).find(doc => doc.key?.startsWith('/works/'));
-  logDebug('title_search_selected_work', { work_key: best?.key || null });
-  return best?.key || null;
+  const titleVariants = buildTitleVariants(title);
+  const queryAttempts = [];
+
+  for (const titleVariant of titleVariants) {
+    if (author) {
+      queryAttempts.push({
+        query: `${titleVariant} ${author}`,
+        strategy: 'title_plus_author',
+        title_variant: titleVariant
+      });
+    }
+    queryAttempts.push({
+      query: titleVariant,
+      strategy: 'title_only',
+      title_variant: titleVariant
+    });
+  }
+
+  for (const attempt of queryAttempts) {
+    const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(attempt.query)}&limit=10&fields=key,title,author_name`);
+    logDebug('title_search_attempted', {
+      query: attempt.query,
+      strategy: attempt.strategy,
+      title_variant: attempt.title_variant,
+      status: res.status
+    });
+    if (!res.ok) continue;
+
+    const data = await res.json();
+    const docs = data.docs || [];
+    logDebug('title_search_results', {
+      query: attempt.query,
+      strategy: attempt.strategy,
+      docs_count: docs.length,
+      top_hits: docs.slice(0, 5).map(doc => ({
+        key: doc.key || null,
+        title: doc.title || null,
+        author_name: (doc.author_name || []).slice(0, 2)
+      }))
+    });
+
+    const best = pickBestWorkDoc(docs, authorLast);
+    if (best?.key) {
+      logDebug('title_search_selected_work', {
+        query: attempt.query,
+        strategy: attempt.strategy,
+        work_key: best.key
+      });
+      return best.key;
+    }
+  }
+
+  logDebug('title_search_selected_work', { work_key: null });
+  return null;
 }
 
 async function fetchOpenLibraryEditions(workKey, maxRows, logDebug = () => {}) {
@@ -414,6 +449,24 @@ function normalizeIsbn(value) {
 
 function stripSeriesSuffix(title) {
   return String(title || '').replace(/\s*\([^)]*#[\d.]+[^)]*\)/g, '').trim();
+}
+
+function stripSubtitle(title) {
+  return String(title || '').split(':')[0].trim();
+}
+
+function buildTitleVariants(title) {
+  const raw = String(title || '').trim();
+  const noSeriesSuffix = stripSeriesSuffix(raw);
+  const noSubtitle = stripSubtitle(noSeriesSuffix);
+  return Array.from(new Set([raw, noSeriesSuffix, noSubtitle].filter(Boolean)));
+}
+
+function pickBestWorkDoc(docs, authorLast) {
+  return (docs || []).find(doc =>
+    doc.key?.startsWith('/works/') &&
+    (!authorLast || doc.author_name?.some(name => String(name).toLowerCase().includes(authorLast)))
+  ) || (docs || []).find(doc => doc.key?.startsWith('/works/')) || null;
 }
 
 function quoteQueryValue(value) {
