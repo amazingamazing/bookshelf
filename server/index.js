@@ -19,6 +19,7 @@ app.use('/api/export', require('./routes/export'));
 app.use('/api/ai', require('./routes/ai'));
 app.use('/api/covers', require('./routes/covers'));
 app.use('/api/fanart', require('./routes/fanart'));
+app.use('/api/cinema', require('./routes/cinema'));
 
 // Serve React frontend in production
 if (process.env.NODE_ENV === 'production') {
