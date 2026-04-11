@@ -16,7 +16,14 @@ router.get('/series-images/:seriesId', async (req, res) => {
         s.id,
         s.name,
         s.tier,
-        a.name AS author_name
+        a.name AS author_name,
+        (
+          SELECT b1.title
+          FROM books b1
+          WHERE b1.series_id = s.id
+          ORDER BY b1.published_date NULLS LAST, b1.series_order NULLS LAST, b1.id
+          LIMIT 1
+        ) AS first_book_title
       FROM series s
       LEFT JOIN authors a ON a.id = s.author_id
       WHERE s.id = $1
@@ -61,7 +68,7 @@ router.get('/series-images/:seriesId', async (req, res) => {
     }
 
     const fanartPool = fanartEnabled
-      ? await fetchSeriesFanartViaExistingEndpoint(req, seriesId, fanartLimit)
+      ? await fetchSeriesFanartViaExistingEndpoint(req, series, fanartLimit)
       : [];
     const shuffledFanartPool = shuffleArray(fanartPool);
     const images = composeCinemaSequence(covers, shuffledFanartPool, fanartPerCoverMode);
@@ -81,15 +88,21 @@ router.get('/series-images/:seriesId', async (req, res) => {
   }
 });
 
-async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, limit) {
+async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
   const protocol = req.get('x-forwarded-proto') || req.protocol || 'http';
   const host = req.get('x-forwarded-host') || req.get('host');
   if (!host) return [];
+  const seriesId = Number(series?.id);
+  const seriesName = String(series?.name || '').trim();
+  const firstBookTitle = String(series?.first_book_title || '').trim();
+  const authorName = String(series?.author_name || '').trim();
+  if (!Number.isFinite(seriesId)) return [];
+  const baseUrl = `${protocol}://${host}`;
 
   const primarySortMode = Math.random() < 0.45 ? 'newest' : 'popular';
   const primaryTimeWindow = Math.random() < 0.4 ? '5y' : 'all';
 
-  const primary = await fetchFanartBatch(`${protocol}://${host}`, seriesId, {
+  const primary = await fetchFanartBySeriesId(baseUrl, seriesId, {
     limit,
     sortMode: primarySortMode,
     timeWindow: primaryTimeWindow,
@@ -100,7 +113,7 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, limit) {
 
   if (primary.length >= 6) return shuffleArray(primary);
 
-  const secondary = await fetchFanartBatch(`${protocol}://${host}`, seriesId, {
+  const secondary = await fetchFanartBySeriesId(baseUrl, seriesId, {
     limit: Math.max(limit, 56),
     sortMode: primarySortMode === 'popular' ? 'newest' : 'popular',
     timeWindow: 'all',
@@ -109,10 +122,31 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, limit) {
     perCreatorCap: 4
   });
 
-  return shuffleArray(mergeUniqueByUrl(primary, secondary));
+  let merged = mergeUniqueByUrl(primary, secondary);
+  if (merged.length >= 6) return shuffleArray(merged);
+
+  const queryFallbacks = [];
+  if (seriesName) queryFallbacks.push(`${seriesName} fan art`);
+  if (firstBookTitle) queryFallbacks.push(`${firstBookTitle} fan art`);
+  if (seriesName && authorName) queryFallbacks.push(`${seriesName} ${authorName} fan art`);
+
+  for (const query of queryFallbacks) {
+    const byQuery = await fetchFanartByQuery(baseUrl, query, {
+      limit: Math.max(limit, 56),
+      sortMode: 'popular',
+      timeWindow: 'all',
+      minEdge: 320,
+      excludeAi: false,
+      perCreatorCap: 5
+    });
+    merged = mergeUniqueByUrl(merged, byQuery);
+    if (merged.length >= 10) break;
+  }
+
+  return shuffleArray(merged);
 }
 
-async function fetchFanartBatch(baseUrl, seriesId, options) {
+async function fetchFanartBySeriesId(baseUrl, seriesId, options) {
   const params = new URLSearchParams({
     series_id: String(seriesId),
     limit: String(Math.max(8, Number(options.limit) || 40)),
@@ -124,6 +158,25 @@ async function fetchFanartBatch(baseUrl, seriesId, options) {
     per_creator_cap: String(Math.max(1, Number(options.perCreatorCap) || 2))
   });
   const url = `${baseUrl}/api/fanart/deviantart?${params.toString()}`;
+  return fetchFanartItems(url);
+}
+
+async function fetchFanartByQuery(baseUrl, query, options) {
+  const params = new URLSearchParams({
+    query: String(query),
+    limit: String(Math.max(8, Number(options.limit) || 40)),
+    allow_mature: 'false',
+    min_edge: String(Math.max(200, Number(options.minEdge) || 700)),
+    sort_mode: options.sortMode || 'popular',
+    time_window: options.timeWindow || 'all',
+    exclude_ai: options.excludeAi ? 'true' : 'false',
+    per_creator_cap: String(Math.max(1, Number(options.perCreatorCap) || 2))
+  });
+  const url = `${baseUrl}/api/fanart/deviantart?${params.toString()}`;
+  return fetchFanartItems(url);
+}
+
+async function fetchFanartItems(url) {
   try {
     const response = await fetch(url);
     if (!response.ok) return [];
