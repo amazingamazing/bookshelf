@@ -16,9 +16,12 @@ export default function ShelfCinema({ onExit }) {
   const fadeTimerRef = useRef(null)
   const attributionTimerRef = useRef(null)
   const advanceRef = useRef(() => {})
+  const prefetchNextQueueRef = useRef(async () => null)
   const requestsRef = useRef(new Set())
   const failedImageUrlsRef = useRef(new Set())
   const debugLogRef = useRef([])
+  const prefetchedQueueRef = useRef(null)
+  const recentFanartUrlsRef = useRef([])
 
   const [seriesPool, setSeriesPool] = useState([])
   const [loading, setLoading] = useState(true)
@@ -83,6 +86,22 @@ export default function ShelfCinema({ onExit }) {
     return image
   }, [])
 
+  const preloadImage = useCallback((url) => {
+    return new Promise((resolve) => {
+      const image = new Image()
+      image.onload = () => resolve(true)
+      image.onerror = () => resolve(false)
+      image.src = url
+    })
+  }, [])
+
+  const preloadImages = useCallback(async (urls) => {
+    const safeUrls = (Array.isArray(urls) ? urls : []).filter(Boolean)
+    if (!safeUrls.length) return []
+    const results = await Promise.all(safeUrls.map(url => preloadImage(url)))
+    return safeUrls.filter((_, index) => results[index])
+  }, [preloadImage])
+
   const fetchSeriesQueue = useCallback(async (series, runtimeControls) => {
     const controller = new AbortController()
     requestsRef.current.add(controller)
@@ -122,12 +141,18 @@ export default function ShelfCinema({ onExit }) {
         })
       }
       if (!unique.length) return null
+      const recentSet = new Set(recentFanartUrlsRef.current)
+      const fanartFresh = unique.filter(image => image.source === 'fanart' && !recentSet.has(image.url))
+      const fanartSeen = unique.filter(image => image.source === 'fanart' && recentSet.has(image.url))
+      const covers = unique.filter(image => image.source !== 'fanart')
+      const diversified = interleaveFanartGroups(covers, fanartFresh, fanartSeen)
       logDebug('queue_loaded', {
         seriesId: series.id,
         seriesName: series.name,
-        imageCount: unique.length
+        imageCount: diversified.length,
+        freshFanart: fanartFresh.length
       })
-      return { series, images: unique }
+      return { series, images: diversified }
     } catch (err) {
       logDebug('queue_fetch_error', {
         seriesId: series.id,
@@ -178,6 +203,19 @@ export default function ShelfCinema({ onExit }) {
     logDebug('no_queue_from_any_pick', { allowedCount: allowed.length })
     return null
   }, [fetchSeriesQueue, logDebug, refreshControls, seriesPool, weightedPickSeries])
+
+  const prefetchUpcomingFromCurrentQueue = useCallback(() => {
+    const queue = queueRef.current
+    const upcoming = (queue.images || []).slice(queue.cursor, queue.cursor + 2).map(item => item.url).filter(Boolean)
+    if (!upcoming.length) return
+    preloadImages(upcoming).then(() => {})
+  }, [preloadImages])
+
+  const rememberFanartImage = useCallback((image) => {
+    if (!image || image.source !== 'fanart') return
+    const list = [...recentFanartUrlsRef.current, image.url]
+    recentFanartUrlsRef.current = list.slice(-200)
+  }, [])
 
   const pushSlide = useCallback((image, series) => {
     const runtimeControls = refreshControls()
@@ -249,8 +287,40 @@ export default function ShelfCinema({ onExit }) {
       imageUrl: nextImage.url,
       source: nextImage.source
     })
+    rememberFanartImage(nextImage)
     pushSlide(nextImage, series)
-  }, [logDebug, pickNextSeriesQueue, pullNextImageFromQueue, pushSlide, seriesPool.length])
+    prefetchUpcomingFromCurrentQueue()
+    prefetchNextQueueRef.current(series?.id || null)
+  }, [logDebug, pickNextSeriesQueue, prefetchUpcomingFromCurrentQueue, pullNextImageFromQueue, pushSlide, rememberFanartImage, seriesPool.length])
+
+  const prefetchNextQueue = useCallback(async (excludeSeriesId = null) => {
+    if (prefetchedQueueRef.current) return prefetchedQueueRef.current
+    const runtimeControls = refreshControls()
+    const allowed = applySeriesRules(seriesPool, runtimeControls.seriesRules)
+      .filter(series => Number(series.id) !== Number(excludeSeriesId))
+    if (!allowed.length) return null
+
+    for (let attempts = 0; attempts < allowed.length * 2; attempts += 1) {
+      const picked = weightedPickSeries(allowed)
+      if (!picked) break
+      const queue = await fetchSeriesQueue(picked, runtimeControls)
+      if (!queue?.images?.length) continue
+      const firstFew = queue.images.slice(0, 3).map(item => item.url).filter(Boolean)
+      await preloadImages(firstFew)
+      prefetchedQueueRef.current = queue
+      logDebug('next_queue_prefetched', {
+        seriesId: picked.id,
+        seriesName: picked.name,
+        imageCount: queue.images.length
+      })
+      return queue
+    }
+    return null
+  }, [fetchSeriesQueue, logDebug, preloadImages, refreshControls, seriesPool, weightedPickSeries])
+
+  useEffect(() => {
+    prefetchNextQueueRef.current = prefetchNextQueue
+  }, [prefetchNextQueue])
 
   const handleImageError = useCallback((url, layer) => {
     const safeUrl = String(url || '')
@@ -370,8 +440,28 @@ export default function ShelfCinema({ onExit }) {
 
   useEffect(() => {
     if (!seriesPool.length || currentSlide) return
-    advance()
-  }, [advance, currentSlide, seriesPool])
+    ;(async () => {
+      const startupQueue = prefetchedQueueRef.current || await pickNextSeriesQueue()
+      if (!mountedRef.current) return
+      if (!startupQueue?.images?.length) {
+        setError('No eligible series with images available for Shelf Cinema.')
+        return
+      }
+      prefetchedQueueRef.current = null
+      queueRef.current = { series: startupQueue.series, images: startupQueue.images, cursor: 0 }
+      await preloadImages(startupQueue.images.slice(0, 3).map(item => item.url))
+      if (!mountedRef.current) return
+      const firstImage = pullNextImageFromQueue()
+      if (!firstImage) {
+        setError('Could not load the first image.')
+        return
+      }
+      rememberFanartImage(firstImage)
+      pushSlide(firstImage, startupQueue.series)
+      prefetchUpcomingFromCurrentQueue()
+      prefetchNextQueue(startupQueue.series.id)
+    })()
+  }, [currentSlide, pickNextSeriesQueue, prefetchNextQueue, prefetchUpcomingFromCurrentQueue, preloadImages, pullNextImageFromQueue, pushSlide, rememberFanartImage, seriesPool])
 
   return (
     <div
@@ -423,6 +513,28 @@ export default function ShelfCinema({ onExit }) {
         <div style={styles.bottomLeft}>
           <div style={styles.seriesName}>{currentSeries?.name || ''}</div>
           <div style={styles.authorName}>{currentSeries?.author_name || ''}</div>
+          {(currentSlide?.image?.source === 'fanart' || currentSlide?.image?.kind === 'fanart') && (
+            <div
+              style={{
+                ...styles.leftCreditRow,
+                opacity: attributionVisible ? 1 : 0,
+                transition: `opacity ${Math.max(140, Math.round((controls.crossfadeSec || 1) * 1000 * 0.6))}ms ease`
+              }}
+              onClick={event => event.stopPropagation()}
+            >
+              {currentSlide?.image?.creator_url ? (
+                <a href={currentSlide.image.creator_url} target="_blank" rel="noopener noreferrer" style={styles.leftCreditLink}>
+                  @{currentSlide.image.creator || 'artist'}
+                </a>
+              ) : currentSlide?.image?.external_link ? (
+                <a href={currentSlide.image.external_link} target="_blank" rel="noopener noreferrer" style={styles.leftCreditLink}>
+                  @{currentSlide.image.creator || 'artist'}
+                </a>
+              ) : (
+                <span style={styles.leftCreditLabel}>@{currentSlide?.image?.creator || 'artist'}</span>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={styles.bottomRight}>
@@ -435,32 +547,16 @@ export default function ShelfCinema({ onExit }) {
               {currentSeries.tier}
             </span>
           )}
-          {(currentSlide?.image?.source === 'fanart' || currentSlide?.image?.kind === 'fanart') && (
-            <div
-              style={{
-                ...styles.creditRow,
-                opacity: attributionVisible ? 1 : 0,
-                transition: `opacity ${Math.max(140, Math.round((controls.crossfadeSec || 1) * 1000 * 0.6))}ms ease`
-              }}
+          {(currentSlide?.image?.source === 'fanart' || currentSlide?.image?.kind === 'fanart') && currentSlide?.image?.external_link && (
+            <a
+              href={currentSlide.image.external_link}
+              target="_blank"
+              rel="noopener noreferrer"
               onClick={event => event.stopPropagation()}
+              style={styles.creditLink}
             >
-              <span style={styles.creditLabel}>Art by </span>
-              {currentSlide?.image?.creator_url ? (
-                <a href={currentSlide.image.creator_url} target="_blank" rel="noopener noreferrer" style={styles.creditLink}>
-                  {currentSlide.image.creator || 'artist'}
-                </a>
-              ) : (
-                <span style={styles.creditLabel}>{currentSlide?.image?.creator || 'artist'}</span>
-              )}
-              {currentSlide?.image?.external_link && (
-                <>
-                  <span style={styles.creditLabel}> - </span>
-                  <a href={currentSlide.image.external_link} target="_blank" rel="noopener noreferrer" style={styles.creditLink}>
-                    source
-                  </a>
-                </>
-              )}
-            </div>
+              View artwork
+            </a>
           )}
         </div>
       </div>
@@ -528,6 +624,22 @@ function applySeriesRules(seriesPool, seriesRules) {
     if (whitelist.size > 0 && !whitelist.has(id)) return false
     return true
   })
+}
+
+function interleaveFanartGroups(covers, freshFanart, seenFanart) {
+  const output = []
+  const fresh = [...freshFanart]
+  const seen = [...seenFanart]
+  const coverList = [...covers]
+  for (let index = 0; index < coverList.length; index += 1) {
+    output.push(coverList[index])
+    if (index >= coverList.length - 1) continue
+    const bucket = fresh.length ? fresh : seen
+    if (bucket.length) output.push(bucket.shift())
+  }
+  while (fresh.length) output.push(fresh.shift())
+  while (seen.length) output.push(seen.shift())
+  return output
 }
 
 const styles = {
@@ -635,6 +747,20 @@ const styles = {
     marginTop: 4,
     textShadow: '0 2px 10px rgba(0,0,0,0.75)'
   },
+  leftCreditRow: {
+    marginTop: 8,
+    fontSize: 12,
+    color: 'rgba(232,228,220,0.85)',
+    textShadow: '0 2px 10px rgba(0,0,0,0.75)'
+  },
+  leftCreditLabel: {
+    color: 'rgba(232,228,220,0.85)'
+  },
+  leftCreditLink: {
+    color: 'rgba(232,228,220,0.9)',
+    textDecoration: 'underline',
+    textUnderlineOffset: '2px'
+  },
   bottomRight: {
     position: 'absolute',
     right: 24,
@@ -652,14 +778,6 @@ const styles = {
     textAlign: 'center',
     padding: '6px 12px',
     textShadow: 'none'
-  },
-  creditRow: {
-    color: '#fff',
-    fontSize: 12,
-    textShadow: '0 2px 10px rgba(0,0,0,0.8)'
-  },
-  creditLabel: {
-    color: 'rgba(255,255,255,0.9)'
   },
   creditLink: {
     color: '#fff',

@@ -63,7 +63,8 @@ router.get('/series-images/:seriesId', async (req, res) => {
     const fanartPool = fanartEnabled
       ? await fetchSeriesFanartViaExistingEndpoint(req, seriesId, fanartLimit)
       : [];
-    const images = composeCinemaSequence(covers, fanartPool, fanartPerCoverMode);
+    const shuffledFanartPool = shuffleArray(fanartPool);
+    const images = composeCinemaSequence(covers, shuffledFanartPool, fanartPerCoverMode);
 
     res.json({
       series: {
@@ -85,13 +86,15 @@ async function fetchSeriesFanartViaExistingEndpoint(req, seriesId, limit) {
   const host = req.get('x-forwarded-host') || req.get('host');
   if (!host) return [];
 
+  const sortMode = Math.random() < 0.45 ? 'newest' : 'popular';
+  const timeWindow = Math.random() < 0.4 ? '5y' : 'all';
   const params = new URLSearchParams({
     series_id: String(seriesId),
     limit: String(limit),
     allow_mature: 'false',
     min_edge: '700',
-    sort_mode: 'popular',
-    time_window: 'all',
+    sort_mode: sortMode,
+    time_window: timeWindow,
     exclude_ai: 'true',
     per_creator_cap: '2'
   });
@@ -185,6 +188,17 @@ function randomInt(min, max) {
   const hi = Math.floor(Number(max) || 0);
   if (hi <= lo) return lo;
   return Math.floor(Math.random() * (hi - lo + 1)) + lo;
+}
+
+function shuffleArray(input) {
+  const arr = Array.isArray(input) ? [...input] : [];
+  for (let i = arr.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i];
+    arr[i] = arr[j];
+    arr[j] = tmp;
+  }
+  return arr;
 }
 
 module.exports = router;
