@@ -17,6 +17,7 @@
 - Shelf Cinema control panel page rebuilt with persisted settings for hold range, crossfade, Ken Burns intensity, fan-art toggle/per-cover amount, series whitelist/blacklist, and debug mode preset
 - Cinema image aggregator endpoint: GET /api/cinema/series-images/:seriesId now builds publication-order cover queues and inserts fan art between covers when available
 - Cinema backend fan-art retrieval now includes fallback retries (series-id + query-based attempts) and shuffled merge logic for better variety
+- Cover Similarity Lab page + API added for ASOIAF / Wheel of Time / Harry Potter using perceptual hashing and adjustable Hamming-distance clustering
 - Tier list hides series with zero associated books; series view hides rating when a series has no books
 - Deployed on Render
 
@@ -36,6 +37,7 @@
 - [ ] reduce need for DB resets while iterating on imports/cover data
 - [ ] improve fan art source quality/ranking signals and result variety
 - [ ] optional follow-up: filter dead Open Library cover links from edition picker before display
+- [ ] evaluate perceptual-hash duplicate detection quality and choose a default distance threshold for Cinema feed dedupe
 
 ## Key decisions
 - series are ranked not individual books

@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const fetch = require('node-fetch');
+const { Jimp } = require('jimp');
 const { pool } = require('../db');
 
 const FALLBACK_CHAIN = [
@@ -8,6 +9,9 @@ const FALLBACK_CHAIN = [
   'librarything_isbn',
   'internet_archive'
 ];
+const PHASH_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const COVER_PHASH_CACHE = new Map();
+const TARGET_SERIES_NAMES = ['A Song of Ice and Fire', 'Wheel of Time', 'Harry Potter'];
 
 router.get('/lookup', async (req, res) => {
   try {
@@ -195,6 +199,128 @@ router.post('/select', async (req, res) => {
 
     await saveCoverCandidate({ bookId, isbn, coverUrl, source, metadata });
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/similarity-lab', async (req, res) => {
+  try {
+    const requestedDistance = Number(req.query.distance);
+    const distanceThreshold = Number.isFinite(requestedDistance)
+      ? Math.max(0, Math.min(30, Math.round(requestedDistance)))
+      : 8;
+    const seriesNames = parseSeriesNames(req.query.series_names);
+
+    const { rows } = await pool.query(`
+      WITH target_series AS (
+        SELECT id, name
+        FROM series
+        WHERE EXISTS (
+          SELECT 1
+          FROM unnest($1::text[]) AS needle
+          WHERE lower(name) LIKE '%' || needle || '%'
+        )
+      ),
+      primary_covers AS (
+        SELECT
+          b.id AS book_id,
+          b.title AS book_title,
+          b.series_order,
+          s.id AS series_id,
+          s.name AS series_name,
+          b.cover_url,
+          'book_cover'::text AS source,
+          true AS is_primary,
+          b.created_at AS discovered_at
+        FROM books b
+        JOIN target_series s ON s.id = b.series_id
+        WHERE b.cover_url IS NOT NULL
+          AND b.cover_url <> ''
+      ),
+      ranked_candidates AS (
+        SELECT
+          b.id AS book_id,
+          b.title AS book_title,
+          b.series_order,
+          s.id AS series_id,
+          s.name AS series_name,
+          c.cover_url,
+          c.source,
+          false AS is_primary,
+          c.created_at AS discovered_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY c.book_id
+            ORDER BY c.created_at DESC, c.id DESC
+          ) AS candidate_rank
+        FROM book_cover_candidates c
+        JOIN books b ON b.id = c.book_id
+        JOIN target_series s ON s.id = b.series_id
+        WHERE c.cover_url IS NOT NULL
+          AND c.cover_url <> ''
+      )
+      SELECT
+        book_id,
+        book_title,
+        series_order,
+        series_id,
+        series_name,
+        cover_url,
+        source,
+        is_primary,
+        discovered_at
+      FROM primary_covers
+      UNION ALL
+      SELECT
+        book_id,
+        book_title,
+        series_order,
+        series_id,
+        series_name,
+        cover_url,
+        source,
+        is_primary,
+        discovered_at
+      FROM ranked_candidates
+      WHERE candidate_rank <= 10
+      ORDER BY series_name, series_order NULLS LAST, book_title, is_primary DESC, discovered_at DESC
+    `, [seriesNames.map(name => name.toLowerCase())]);
+
+    const uniqueRecords = dedupeCoverRows(rows);
+    const hashed = await mapWithConcurrency(uniqueRecords, 6, async (row) => {
+      const hashResult = await getPerceptualHashForUrl(row.cover_url);
+      return {
+        ...row,
+        hash: hashResult.hash,
+        hash_error: hashResult.error || null
+      };
+    });
+
+    const hashedRows = hashed.filter(item => item.hash);
+    const failedRows = hashed.filter(item => !item.hash);
+    const clusters = buildSimilarityClusters(hashedRows, distanceThreshold);
+    const nearestPairs = buildNearestPairs(hashedRows, 40);
+
+    res.json({
+      target_series: seriesNames,
+      distance_threshold: distanceThreshold,
+      totals: {
+        covers_considered: uniqueRecords.length,
+        covers_hashed: hashedRows.length,
+        covers_failed: failedRows.length,
+        clusters: clusters.length
+      },
+      clusters,
+      nearest_pairs: nearestPairs,
+      failures: failedRows.map(item => ({
+        book_id: item.book_id,
+        book_title: item.book_title,
+        series_name: item.series_name,
+        cover_url: item.cover_url,
+        source: item.source,
+        hash_error: item.hash_error || 'unknown'
+      }))
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -476,6 +602,335 @@ function quoteQueryValue(value) {
 function toHttps(url) {
   return String(url || '').replace(/^http:\/\//i, 'https://');
 }
+
+function parseSeriesNames(rawSeriesNames) {
+  const normalized = String(rawSeriesNames || '')
+    .split(',')
+    .map(value => value.trim())
+    .filter(Boolean);
+  if (normalized.length) return Array.from(new Set(normalized));
+  return TARGET_SERIES_NAMES;
+}
+
+function dedupeCoverRows(rows) {
+  const out = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const url = String(row.cover_url || '').trim();
+    if (!url) continue;
+    const key = `${row.book_id}::${url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      book_id: Number(row.book_id),
+      book_title: row.book_title || null,
+      series_order: row.series_order == null ? null : Number(row.series_order),
+      series_id: Number(row.series_id),
+      series_name: row.series_name || null,
+      cover_url: url,
+      source: row.source || 'unknown',
+      is_primary: Boolean(row.is_primary),
+      discovered_at: row.discovered_at || null
+    });
+  }
+  return out;
+}
+
+async function getPerceptualHashForUrl(url) {
+  const normalizedUrl = String(url || '').trim();
+  if (!normalizedUrl) return { hash: null, error: 'missing_url' };
+
+  const cached = COVER_PHASH_CACHE.get(normalizedUrl);
+  if (cached && (Date.now() - cached.updated_at) < PHASH_CACHE_TTL_MS) {
+    return { hash: cached.hash, error: cached.error };
+  }
+
+  try {
+    const response = await fetch(normalizedUrl, { timeout: 20000 });
+    if (!response.ok) {
+      const result = { hash: null, error: `http_${response.status}`, updated_at: Date.now() };
+      COVER_PHASH_CACHE.set(normalizedUrl, result);
+      return { hash: result.hash, error: result.error };
+    }
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (contentType && !contentType.includes('image/')) {
+      const result = { hash: null, error: `content_type_${contentType}`, updated_at: Date.now() };
+      COVER_PHASH_CACHE.set(normalizedUrl, result);
+      return { hash: result.hash, error: result.error };
+    }
+    const buffer = await response.buffer();
+    const hash = await computePHashHex(buffer);
+    const result = { hash, error: null, updated_at: Date.now() };
+    COVER_PHASH_CACHE.set(normalizedUrl, result);
+    return { hash: result.hash, error: result.error };
+  } catch (err) {
+    const result = { hash: null, error: err.message || 'fetch_failed', updated_at: Date.now() };
+    COVER_PHASH_CACHE.set(normalizedUrl, result);
+    return { hash: result.hash, error: result.error };
+  }
+}
+
+async function computePHashHex(buffer) {
+  const image = await Jimp.read(buffer);
+  image.resize({ w: 32, h: 32 });
+  image.grayscale();
+  const pixels = [];
+  for (let y = 0; y < 32; y += 1) {
+    const row = [];
+    for (let x = 0; x < 32; x += 1) {
+      const rgba = Jimp.intToRGBA(image.getPixelColor(x, y));
+      row.push(Number(rgba.r || 0));
+    }
+    pixels.push(row);
+  }
+  const dct = dct2d(pixels, 32);
+  const topLeft = [];
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      if (x === 0 && y === 0) continue;
+      topLeft.push(dct[y][x]);
+    }
+  }
+  const average = topLeft.reduce((sum, value) => sum + value, 0) / Math.max(1, topLeft.length);
+  const bits = [];
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) {
+      bits.push(dct[y][x] > average ? 1 : 0);
+    }
+  }
+  return bitsToHex(bits);
+}
+
+function dct2d(matrix, size) {
+  const out = Array.from({ length: size }, () => Array(size).fill(0));
+  const factor = Math.PI / (size * 2);
+
+  for (let v = 0; v < size; v += 1) {
+    for (let u = 0; u < size; u += 1) {
+      let sum = 0;
+      for (let y = 0; y < size; y += 1) {
+        for (let x = 0; x < size; x += 1) {
+          sum += matrix[y][x]
+            * Math.cos((2 * x + 1) * u * factor)
+            * Math.cos((2 * y + 1) * v * factor);
+        }
+      }
+      const alphaU = u === 0 ? 1 / Math.sqrt(2) : 1;
+      const alphaV = v === 0 ? 1 / Math.sqrt(2) : 1;
+      out[v][u] = (2 / size) * alphaU * alphaV * sum;
+    }
+  }
+  return out;
+}
+
+function bitsToHex(bits) {
+  let output = '';
+  for (let i = 0; i < bits.length; i += 4) {
+    const nibble = ((bits[i] || 0) << 3)
+      | ((bits[i + 1] || 0) << 2)
+      | ((bits[i + 2] || 0) << 1)
+      | (bits[i + 3] || 0);
+    output += nibble.toString(16);
+  }
+  return output;
+}
+
+function hammingDistanceHex(a, b) {
+  if (!a || !b || a.length !== b.length) return Number.POSITIVE_INFINITY;
+  let distance = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = parseInt(a[i], 16);
+    const right = parseInt(b[i], 16);
+    const xor = left ^ right;
+    distance += BIT_COUNT_LOOKUP[xor];
+  }
+  return distance;
+}
+
+function buildSimilarityClusters(items, threshold) {
+  const union = new UnionFind(items.length);
+  const distances = new Map();
+
+  for (let i = 0; i < items.length; i += 1) {
+    for (let j = i + 1; j < items.length; j += 1) {
+      const distance = hammingDistanceHex(items[i].hash, items[j].hash);
+      distances.set(pairKey(i, j), distance);
+      if (distance <= threshold) union.union(i, j);
+    }
+  }
+
+  const grouped = new Map();
+  for (let i = 0; i < items.length; i += 1) {
+    const root = union.find(i);
+    if (!grouped.has(root)) grouped.set(root, []);
+    grouped.get(root).push(i);
+  }
+
+  const clusters = [];
+  for (const indices of grouped.values()) {
+    const anchorIndex = pickClusterAnchor(indices, distances);
+    const anchor = items[anchorIndex];
+    const members = indices
+      .map(index => {
+        const item = items[index];
+        const distanceToAnchor = index === anchorIndex
+          ? 0
+          : readPairDistance(anchorIndex, index, distances);
+        return {
+          ...item,
+          distance_to_anchor: distanceToAnchor
+        };
+      })
+      .sort((a, b) => (
+        a.distance_to_anchor - b.distance_to_anchor
+        || Number(b.is_primary) - Number(a.is_primary)
+        || String(a.series_name || '').localeCompare(String(b.series_name || ''))
+        || (a.series_order ?? Number.MAX_SAFE_INTEGER) - (b.series_order ?? Number.MAX_SAFE_INTEGER)
+        || String(a.book_title || '').localeCompare(String(b.book_title || ''))
+      ));
+
+    let maxDistance = 0;
+    for (let i = 0; i < indices.length; i += 1) {
+      for (let j = i + 1; j < indices.length; j += 1) {
+        const d = readPairDistance(indices[i], indices[j], distances);
+        if (d > maxDistance) maxDistance = d;
+      }
+    }
+
+    clusters.push({
+      id: `cluster_${clusters.length + 1}`,
+      size: members.length,
+      max_internal_distance: maxDistance,
+      anchor: {
+        book_id: anchor.book_id,
+        book_title: anchor.book_title,
+        series_name: anchor.series_name,
+        cover_url: anchor.cover_url,
+        hash: anchor.hash
+      },
+      items: members
+    });
+  }
+
+  return clusters.sort((a, b) => (
+    b.size - a.size
+    || a.max_internal_distance - b.max_internal_distance
+    || String(a.anchor.series_name || '').localeCompare(String(b.anchor.series_name || ''))
+    || String(a.anchor.book_title || '').localeCompare(String(b.anchor.book_title || ''))
+  ));
+}
+
+function pickClusterAnchor(indices, distances) {
+  if (indices.length <= 1) return indices[0];
+  let bestIndex = indices[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  for (const candidate of indices) {
+    let score = 0;
+    for (const other of indices) {
+      if (candidate === other) continue;
+      score += readPairDistance(candidate, other, distances);
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      bestIndex = candidate;
+    }
+  }
+  return bestIndex;
+}
+
+function buildNearestPairs(items, limit) {
+  const pairs = [];
+  for (let i = 0; i < items.length; i += 1) {
+    for (let j = i + 1; j < items.length; j += 1) {
+      const distance = hammingDistanceHex(items[i].hash, items[j].hash);
+      pairs.push({
+        distance,
+        left: {
+          book_id: items[i].book_id,
+          book_title: items[i].book_title,
+          series_name: items[i].series_name,
+          cover_url: items[i].cover_url,
+          source: items[i].source
+        },
+        right: {
+          book_id: items[j].book_id,
+          book_title: items[j].book_title,
+          series_name: items[j].series_name,
+          cover_url: items[j].cover_url,
+          source: items[j].source
+        }
+      });
+    }
+  }
+  return pairs
+    .sort((a, b) => (
+      a.distance - b.distance
+      || String(a.left.series_name || '').localeCompare(String(b.left.series_name || ''))
+      || String(a.left.book_title || '').localeCompare(String(b.left.book_title || ''))
+    ))
+    .slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function pairKey(left, right) {
+  return left < right ? `${left}:${right}` : `${right}:${left}`;
+}
+
+function readPairDistance(left, right, distances) {
+  return distances.get(pairKey(left, right)) ?? Number.POSITIVE_INFINITY;
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  const safeItems = Array.isArray(items) ? items : [];
+  const safeConcurrency = Math.max(1, Number(concurrency) || 1);
+  const results = new Array(safeItems.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < safeItems.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await mapper(safeItems[index], index);
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(safeConcurrency, safeItems.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+class UnionFind {
+  constructor(size) {
+    this.parent = Array.from({ length: size }, (_, index) => index);
+    this.rank = Array(size).fill(0);
+  }
+
+  find(index) {
+    if (this.parent[index] !== index) {
+      this.parent[index] = this.find(this.parent[index]);
+    }
+    return this.parent[index];
+  }
+
+  union(left, right) {
+    const rootLeft = this.find(left);
+    const rootRight = this.find(right);
+    if (rootLeft === rootRight) return;
+
+    if (this.rank[rootLeft] < this.rank[rootRight]) {
+      this.parent[rootLeft] = rootRight;
+      return;
+    }
+    if (this.rank[rootLeft] > this.rank[rootRight]) {
+      this.parent[rootRight] = rootLeft;
+      return;
+    }
+    this.parent[rootRight] = rootLeft;
+    this.rank[rootLeft] += 1;
+  }
+}
+
+const BIT_COUNT_LOOKUP = [0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4];
 
 async function urlLooksLikeImage(url) {
   try {

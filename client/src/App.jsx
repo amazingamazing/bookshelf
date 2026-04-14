@@ -8,6 +8,7 @@ import Import from './pages/Import'
 import Discover from './pages/Discover'
 import ShelfCinema from './components/ShelfCinema'
 import CinemaControl from './pages/CinemaControl'
+import CoverSimilarityLab from './pages/CoverSimilarityLab'
 
 const styles = {
   app: { minHeight: '100vh', background: '#0f0e0c' },
@@ -63,6 +64,7 @@ export default function App() {
             ['/tiers', 'Tier List'],
             ['/discover', 'Discover'],
             ['/cinema-control', 'Cinema Control'],
+            ['/cover-similarity-lab', 'Cover Similarity Lab'],
             ['/import', 'Import']
           ].map(([to, label]) => (
             <NavLink key={to} to={to} end={to === '/'}
@@ -82,6 +84,7 @@ export default function App() {
           <Route path="/tiers" element={<TierList />} />
           <Route path="/discover" element={<Discover />} />
           <Route path="/cinema-control" element={<CinemaControl />} />
+          <Route path="/cover-similarity-lab" element={<CoverSimilarityLab />} />
           <Route path="/import" element={<Import />} />
         </Routes>
         {cinemaOpen && <ShelfCinema onExit={() => setCinemaOpen(false)} />}
