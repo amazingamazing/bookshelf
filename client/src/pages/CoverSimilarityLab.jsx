@@ -7,6 +7,7 @@ export default function CoverSimilarityLab() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [enriching, setEnriching] = useState(false)
+  const [enrichStatus, setEnrichStatus] = useState(null)
   const [error, setError] = useState(null)
   const [copiedAt, setCopiedAt] = useState(0)
 
@@ -48,7 +49,8 @@ export default function CoverSimilarityLab() {
       copied_at: new Date().toISOString(),
       distance,
       error: error || null,
-      data
+      data,
+      enrich_status: enrichStatus
     }
     try {
       await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
@@ -61,6 +63,7 @@ export default function CoverSimilarityLab() {
   const enrichAlternates = async () => {
     setEnriching(true)
     setError(null)
+    setEnrichStatus(null)
     try {
       const response = await fetch('/api/covers/similarity-lab/enrich', {
         method: 'POST',
@@ -69,6 +72,11 @@ export default function CoverSimilarityLab() {
       })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Failed to fetch alternate editions')
+      setEnrichStatus(payload)
+      const finalStatus = await pollEnrichJob(payload.job_id, setEnrichStatus)
+      if (finalStatus?.status !== 'completed') {
+        throw new Error('Alternate-cover fetch did not complete successfully')
+      }
       await loadAnalysis(distance)
     } catch (err) {
       setError(err.message || 'Failed to fetch alternate editions')
@@ -116,6 +124,29 @@ export default function CoverSimilarityLab() {
       </div>
 
       {error && <div style={styles.error}>Error: {error}</div>}
+      {enrichStatus && (
+        <div style={styles.progress}>
+          <div style={styles.progressLine}>
+            Enrich status: {enrichStatus.status} ({enrichStatus.books_processed ?? 0}/{enrichStatus.total_books ?? 0})
+          </div>
+          <div style={styles.progressLine}>
+            Candidates attempted: {enrichStatus.attempted_candidates ?? 0}
+            {typeof enrichStatus.books_skipped_existing === 'number'
+              ? ` | skipped (already had alternates): ${enrichStatus.books_skipped_existing}`
+              : ''}
+          </div>
+          {enrichStatus.current_book?.title && (
+            <div style={styles.progressLine}>
+              Current: {enrichStatus.current_book.series_name || 'Unknown series'} - {enrichStatus.current_book.title}
+            </div>
+          )}
+          {Boolean(enrichStatus.errors?.length) && (
+            <div style={{ ...styles.progressLine, color: '#d98b8b' }}>
+              Errors so far: {enrichStatus.errors.length}
+            </div>
+          )}
+        </div>
+      )}
 
       {data && (
         <div style={styles.summaryCard}>
@@ -286,6 +317,18 @@ const styles = {
     marginBottom: 12,
     fontSize: 12
   },
+  progress: {
+    background: '#121d2d',
+    color: '#b9d2f0',
+    border: '1px solid #28486f',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12
+  },
+  progressLine: {
+    fontSize: 12,
+    lineHeight: 1.45
+  },
   tip: {
     background: '#14231a',
     color: '#9fd9b2',
@@ -368,4 +411,23 @@ const styles = {
     borderRadius: 999,
     padding: '2px 7px'
   }
+}
+
+async function pollEnrichJob(jobId, setEnrichStatus) {
+  const safeJobId = String(jobId || '').trim()
+  if (!safeJobId) return null
+  const maxAttempts = 300
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const response = await fetch(`/api/covers/similarity-lab/enrich/${encodeURIComponent(safeJobId)}`)
+    const payload = await response.json()
+    if (!response.ok) throw new Error(payload.error || 'Failed to read enrich progress')
+    setEnrichStatus(payload)
+    if (payload.status === 'completed' || payload.status === 'failed') return payload
+    await sleep(900)
+  }
+  throw new Error('Timed out waiting for enrich job')
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }

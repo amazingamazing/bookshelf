@@ -12,6 +12,8 @@ const FALLBACK_CHAIN = [
 const PHASH_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const COVER_PHASH_CACHE = new Map();
 const TARGET_SERIES_NAMES = ['A Song of Ice and Fire', 'Wheel of Time', 'Harry Potter'];
+const ENRICH_JOBS = new Map();
+const ENRICH_JOB_TTL_MS = 1000 * 60 * 30;
 
 router.get('/lookup', async (req, res) => {
   try {
@@ -334,89 +336,38 @@ router.post('/similarity-lab/enrich', async (req, res) => {
   try {
     const seriesNames = parseSeriesNames(req.body?.series_names || req.query?.series_names);
     const books = await fetchLabBooks(seriesNames);
-    const perBookLimit = 24;
-    let booksProcessed = 0;
-    let workResolved = 0;
-    let attemptedCandidates = 0;
-    let booksWithNoWork = 0;
-    let booksWithNoEditions = 0;
-    const errors = [];
-
-    for (const book of books) {
-      booksProcessed += 1;
-      try {
-        const workKey = await resolveOpenLibraryWork({
-          isbn: book.isbn,
-          title: book.title,
-          author: book.author_name,
-          logDebug: () => {}
-        });
-        if (!workKey) {
-          booksWithNoWork += 1;
-          continue;
-        }
-        workResolved += 1;
-        const editionsRaw = await fetchOpenLibraryEditions(workKey, 120, () => {});
-        const editions = editionsRaw
-          .map(edition => normalizeEdition(edition))
-          .filter(edition => edition && Array.isArray(edition.cover_urls) && edition.cover_urls.length > 0);
-        if (!editions.length) {
-          booksWithNoEditions += 1;
-          continue;
-        }
-        const coverUrls = [];
-        const seen = new Set();
-        for (const edition of editions) {
-          for (const coverUrl of edition.cover_urls) {
-            if (!coverUrl || seen.has(coverUrl)) continue;
-            seen.add(coverUrl);
-            coverUrls.push({
-              url: coverUrl,
-              isbn: edition.isbns[0] || null,
-              metadata: {
-                work_key: workKey,
-                edition_key: edition.edition_key,
-                title: edition.title,
-                publish_date: edition.publish_date,
-                all_isbns: edition.isbns
-              }
-            });
-            if (coverUrls.length >= perBookLimit) break;
-          }
-          if (coverUrls.length >= perBookLimit) break;
-        }
-
-        for (const item of coverUrls) {
-          await saveCoverCandidate({
-            bookId: book.id,
-            isbn: item.isbn,
-            coverUrl: item.url,
-            source: 'open_library_editions',
-            metadata: item.metadata
-          });
-          attemptedCandidates += 1;
-        }
-      } catch (err) {
-        errors.push({
-          book_id: book.id,
-          title: book.title,
-          error: err.message || 'unknown_error'
-        });
-      }
-    }
-
-    res.json({
+    const jobId = buildEnrichJobId();
+    const nowIso = new Date().toISOString();
+    const job = {
+      job_id: jobId,
+      status: 'running',
       target_series: seriesNames,
-      books_processed: booksProcessed,
-      works_resolved: workResolved,
-      books_with_no_work: booksWithNoWork,
-      books_with_no_editions: booksWithNoEditions,
-      attempted_candidates: attemptedCandidates,
-      errors
-    });
+      total_books: books.length,
+      books_processed: 0,
+      books_skipped_existing: 0,
+      works_resolved: 0,
+      books_with_no_work: 0,
+      books_with_no_editions: 0,
+      attempted_candidates: 0,
+      errors: [],
+      current_book: null,
+      created_at: nowIso,
+      updated_at: nowIso,
+      completed_at: null
+    };
+    ENRICH_JOBS.set(jobId, job);
+    pruneOldEnrichJobs();
+    runSimilarityEnrichJob(jobId, books).catch(() => {});
+    res.json(job);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+router.get('/similarity-lab/enrich/:jobId', (req, res) => {
+  const job = ENRICH_JOBS.get(String(req.params.jobId || '').trim());
+  if (!job) return res.status(404).json({ error: 'Enrich job not found' });
+  res.json(job);
 });
 
 async function lookupCoverWaterfall({ isbn, title, author }) {
@@ -762,6 +713,162 @@ async function fetchLabBooks(seriesNames) {
   }));
 }
 
+function buildEnrichJobId() {
+  return `enrich_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function updateEnrichJob(jobId, updates) {
+  const current = ENRICH_JOBS.get(jobId);
+  if (!current) return null;
+  const next = {
+    ...current,
+    ...updates,
+    updated_at: new Date().toISOString()
+  };
+  ENRICH_JOBS.set(jobId, next);
+  return next;
+}
+
+function pruneOldEnrichJobs() {
+  const now = Date.now();
+  for (const [jobId, job] of ENRICH_JOBS.entries()) {
+    const stamp = Date.parse(job.updated_at || job.created_at || 0);
+    if (!Number.isFinite(stamp)) continue;
+    if ((now - stamp) > ENRICH_JOB_TTL_MS) ENRICH_JOBS.delete(jobId);
+  }
+}
+
+async function runSimilarityEnrichJob(jobId, books) {
+  const perBookLimit = 12;
+  const maxEditionRows = 60;
+
+  for (const book of books) {
+    updateEnrichJob(jobId, {
+      current_book: {
+        book_id: book.id,
+        title: book.title,
+        series_name: book.series_name
+      }
+    });
+    try {
+      const existingCount = await countOpenLibraryEditionCandidates(book.id);
+      if (existingCount >= perBookLimit) {
+        const current = ENRICH_JOBS.get(jobId);
+        if (!current) return;
+        updateEnrichJob(jobId, {
+          books_processed: current.books_processed + 1,
+          books_skipped_existing: current.books_skipped_existing + 1
+        });
+        continue;
+      }
+
+      const workKey = await resolveOpenLibraryWork({
+        isbn: book.isbn,
+        title: book.title,
+        author: book.author_name,
+        logDebug: () => {}
+      });
+      if (!workKey) {
+        const current = ENRICH_JOBS.get(jobId);
+        if (!current) return;
+        updateEnrichJob(jobId, {
+          books_processed: current.books_processed + 1,
+          books_with_no_work: current.books_with_no_work + 1
+        });
+        continue;
+      }
+      const currentWithWork = ENRICH_JOBS.get(jobId);
+      if (!currentWithWork) return;
+      updateEnrichJob(jobId, { works_resolved: currentWithWork.works_resolved + 1 });
+
+      const editionsRaw = await fetchOpenLibraryEditions(workKey, maxEditionRows, () => {});
+      const editions = editionsRaw
+        .map(edition => normalizeEdition(edition))
+        .filter(edition => edition && Array.isArray(edition.cover_urls) && edition.cover_urls.length > 0);
+      if (!editions.length) {
+        const current = ENRICH_JOBS.get(jobId);
+        if (!current) return;
+        updateEnrichJob(jobId, {
+          books_processed: current.books_processed + 1,
+          books_with_no_editions: current.books_with_no_editions + 1
+        });
+        continue;
+      }
+
+      const coverUrls = [];
+      const seen = new Set();
+      for (const edition of editions) {
+        for (const coverUrl of edition.cover_urls) {
+          if (!coverUrl || seen.has(coverUrl)) continue;
+          seen.add(coverUrl);
+          coverUrls.push({
+            url: coverUrl,
+            isbn: edition.isbns[0] || null,
+            metadata: {
+              work_key: workKey,
+              edition_key: edition.edition_key,
+              title: edition.title,
+              publish_date: edition.publish_date,
+              all_isbns: edition.isbns
+            }
+          });
+          if (coverUrls.length >= perBookLimit) break;
+        }
+        if (coverUrls.length >= perBookLimit) break;
+      }
+
+      let savedThisBook = 0;
+      for (const item of coverUrls) {
+        await saveCoverCandidate({
+          bookId: book.id,
+          isbn: item.isbn,
+          coverUrl: item.url,
+          source: 'open_library_editions',
+          metadata: item.metadata
+        });
+        savedThisBook += 1;
+      }
+
+      const current = ENRICH_JOBS.get(jobId);
+      if (!current) return;
+      updateEnrichJob(jobId, {
+        books_processed: current.books_processed + 1,
+        attempted_candidates: current.attempted_candidates + savedThisBook
+      });
+    } catch (err) {
+      const current = ENRICH_JOBS.get(jobId);
+      if (!current) return;
+      updateEnrichJob(jobId, {
+        books_processed: current.books_processed + 1,
+        errors: [
+          ...current.errors,
+          {
+            book_id: book.id,
+            title: book.title,
+            error: err.message || 'unknown_error'
+          }
+        ]
+      });
+    }
+  }
+
+  updateEnrichJob(jobId, {
+    status: 'completed',
+    current_book: null,
+    completed_at: new Date().toISOString()
+  });
+}
+
+async function countOpenLibraryEditionCandidates(bookId) {
+  const { rows } = await pool.query(`
+    SELECT COUNT(*)::int AS count
+    FROM book_cover_candidates
+    WHERE book_id = $1
+      AND source = 'open_library_editions'
+  `, [bookId]);
+  return Number(rows?.[0]?.count || 0);
+}
+
 async function getPerceptualHashForUrl(url) {
   const normalizedUrl = String(url || '').trim();
   if (!normalizedUrl) return { hash: null, error: 'missing_url' };
@@ -932,6 +1039,7 @@ function buildSimilarityClusters(items, threshold, comparisonScope) {
         book_id: anchor.book_id,
         book_title: anchor.book_title,
         series_name: anchor.series_name,
+        series_order: anchor.series_order,
         cover_url: anchor.cover_url,
         hash: anchor.hash
       },
@@ -940,10 +1048,11 @@ function buildSimilarityClusters(items, threshold, comparisonScope) {
   }
 
   return clusters.sort((a, b) => (
-    b.size - a.size
-    || a.max_internal_distance - b.max_internal_distance
-    || String(a.anchor.series_name || '').localeCompare(String(b.anchor.series_name || ''))
+    String(a.anchor.series_name || '').localeCompare(String(b.anchor.series_name || ''))
+    || (a.anchor.series_order ?? Number.MAX_SAFE_INTEGER) - (b.anchor.series_order ?? Number.MAX_SAFE_INTEGER)
     || String(a.anchor.book_title || '').localeCompare(String(b.anchor.book_title || ''))
+    || b.size - a.size
+    || a.max_internal_distance - b.max_internal_distance
   ));
 }
 
@@ -977,6 +1086,7 @@ function buildNearestPairs(items, limit, comparisonScope) {
         left: {
           book_id: items[i].book_id,
           book_title: items[i].book_title,
+          series_order: items[i].series_order,
           series_name: items[i].series_name,
           cover_url: items[i].cover_url,
           source: items[i].source
@@ -984,6 +1094,7 @@ function buildNearestPairs(items, limit, comparisonScope) {
         right: {
           book_id: items[j].book_id,
           book_title: items[j].book_title,
+          series_order: items[j].series_order,
           series_name: items[j].series_name,
           cover_url: items[j].cover_url,
           source: items[j].source
@@ -993,9 +1104,10 @@ function buildNearestPairs(items, limit, comparisonScope) {
   }
   return pairs
     .sort((a, b) => (
-      a.distance - b.distance
-      || String(a.left.series_name || '').localeCompare(String(b.left.series_name || ''))
+      String(a.left.series_name || '').localeCompare(String(b.left.series_name || ''))
+      || (a.left.series_order ?? Number.MAX_SAFE_INTEGER) - (b.left.series_order ?? Number.MAX_SAFE_INTEGER)
       || String(a.left.book_title || '').localeCompare(String(b.left.book_title || ''))
+      || a.distance - b.distance
     ))
     .slice(0, Math.max(0, Number(limit) || 0));
 }
