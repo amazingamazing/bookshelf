@@ -23,6 +23,7 @@
 - Cover Similarity Lab now supports one-click alternate-cover harvesting (Open Library editions per target-series book) and nearest-pair threshold guidance
 - Cover Similarity Lab comparisons are now scoped to same-book covers by default to avoid cross-book hash collisions at higher thresholds
 - Cover Similarity Lab alternate harvesting now runs as a background job with in-page progress/status polling; cluster/pair ordering now defaults to series then series-order/book
+- Cover Similarity Lab distance slider now supports 0-64 and persists the last selected value in localStorage
 - Tier list hides series with zero associated books; series view hides rating when a series has no books
 - Deployed on Render
 

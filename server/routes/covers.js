@@ -210,7 +210,7 @@ router.get('/similarity-lab', async (req, res) => {
   try {
     const requestedDistance = Number(req.query.distance);
     const distanceThreshold = Number.isFinite(requestedDistance)
-      ? Math.max(0, Math.min(30, Math.round(requestedDistance)))
+      ? Math.max(0, Math.min(64, Math.round(requestedDistance)))
       : 8;
     const comparisonScope = parseComparisonScope(req.query.comparison_scope);
     const seriesNames = parseSeriesNames(req.query.series_names);
@@ -1123,7 +1123,7 @@ function computeSimilarityInsights(nearestPairs, threshold, clusterCount) {
   const closestDistance = finitePairs.length ? Number(finitePairs[0].distance) : null;
   const recommendation = closestDistance == null
     ? null
-    : Math.max(0, Math.min(30, Math.round(closestDistance)));
+    : Math.max(0, Math.min(64, Math.round(closestDistance)));
   const mode = clusterCount > 0
     ? 'clusters_found'
     : closestDistance == null

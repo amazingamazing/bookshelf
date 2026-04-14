@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
 
 const DEFAULT_DISTANCE = 8
+const MAX_DISTANCE = 64
+const DISTANCE_STORAGE_KEY = 'cover_similarity_lab_distance'
 
 export default function CoverSimilarityLab() {
-  const [distance, setDistance] = useState(DEFAULT_DISTANCE)
+  const [distance, setDistance] = useState(readSavedDistance)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [enriching, setEnriching] = useState(false)
@@ -36,6 +38,14 @@ export default function CoverSimilarityLab() {
     // Run once on page load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DISTANCE_STORAGE_KEY, String(distance))
+    } catch {
+      // Ignore storage failures in private/incognito contexts.
+    }
+  }, [distance])
 
   const clusterStats = useMemo(() => {
     if (!data?.clusters?.length) return { duplicates: 0, singles: 0 }
@@ -103,7 +113,7 @@ export default function CoverSimilarityLab() {
           <input
             type="range"
             min="0"
-            max="24"
+            max={String(MAX_DISTANCE)}
             step="1"
             value={distance}
             onChange={event => setDistance(Number(event.target.value) || 0)}
@@ -430,4 +440,15 @@ async function pollEnrichJob(jobId, setEnrichStatus) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function readSavedDistance() {
+  try {
+    const raw = window.localStorage.getItem(DISTANCE_STORAGE_KEY)
+    const parsed = Number(raw)
+    if (!Number.isFinite(parsed)) return DEFAULT_DISTANCE
+    return Math.max(0, Math.min(MAX_DISTANCE, Math.round(parsed)))
+  } catch {
+    return DEFAULT_DISTANCE
+  }
 }
