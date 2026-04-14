@@ -6,6 +6,7 @@ export default function CoverSimilarityLab() {
   const [distance, setDistance] = useState(DEFAULT_DISTANCE)
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [enriching, setEnriching] = useState(false)
   const [error, setError] = useState(null)
   const [copiedAt, setCopiedAt] = useState(0)
 
@@ -54,6 +55,25 @@ export default function CoverSimilarityLab() {
     }
   }
 
+  const enrichAlternates = async () => {
+    setEnriching(true)
+    setError(null)
+    try {
+      const response = await fetch('/api/covers/similarity-lab/enrich', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Failed to fetch alternate editions')
+      await loadAnalysis(distance)
+    } catch (err) {
+      setError(err.message || 'Failed to fetch alternate editions')
+    } finally {
+      setEnriching(false)
+    }
+  }
+
   return (
     <div style={styles.page}>
       <h1 style={styles.title}>Cover Similarity Lab</h1>
@@ -80,6 +100,9 @@ export default function CoverSimilarityLab() {
           <button onClick={() => loadAnalysis(distance)} disabled={loading} style={styles.reloadBtn}>
             {loading ? 'Running analysis...' : 'Reload analysis'}
           </button>
+          <button onClick={enrichAlternates} disabled={enriching || loading} style={styles.reloadBtn}>
+            {enriching ? 'Fetching alternates...' : 'Fetch more alternates'}
+          </button>
           <button onClick={copyDebug} style={styles.reloadBtn}>
             {Date.now() - copiedAt < 2200 ? 'Copied' : 'Copy Debug'}
           </button>
@@ -96,6 +119,22 @@ export default function CoverSimilarityLab() {
           <div style={styles.summaryLine}>Clusters: {data.totals?.clusters ?? 0}</div>
           <div style={styles.summaryLine}>Duplicate clusters: {clusterStats.duplicates}</div>
           <div style={styles.summaryLine}>Singletons: {clusterStats.singles}</div>
+          {data.insights?.closest_pair_distance != null && (
+            <div style={styles.summaryLine}>
+              Closest pair distance: {data.insights.closest_pair_distance}
+            </div>
+          )}
+          {data.insights?.suggested_threshold_for_first_cluster != null && (
+            <div style={styles.summaryLine}>
+              Suggested threshold: {data.insights.suggested_threshold_for_first_cluster}
+            </div>
+          )}
+        </div>
+      )}
+
+      {data?.insights?.mode === 'increase_threshold' && (
+        <div style={styles.tip}>
+          No clusters yet at distance {distance}. Try increasing to about {data.insights.suggested_threshold_for_first_cluster}.
         </div>
       )}
 
@@ -137,6 +176,29 @@ export default function CoverSimilarityLab() {
                 <div style={styles.coverSeries}>{failure.series_name || 'Unknown series'}</div>
                 <div style={{ ...styles.coverSeries, marginTop: 6, color: '#d98b8b' }}>
                   {failure.hash_error || 'unknown'}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {Boolean(data?.nearest_pairs?.length) && (
+        <section style={styles.clusterSection}>
+          <div style={styles.clusterHeader}>
+            <div style={styles.clusterTitle}>Nearest Cover Pairs</div>
+            <div style={styles.clusterMeta}>Use these distances to tune the slider</div>
+          </div>
+          <div style={{ ...styles.coverGrid, gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
+            {data.nearest_pairs.slice(0, 20).map((pair, index) => (
+              <article key={`${pair.left?.cover_url}-${pair.right?.cover_url}-${index}`} style={styles.coverCard}>
+                <div style={{ ...styles.coverBook, minHeight: 18 }}>Distance: {pair.distance}</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+                  <img src={pair.left?.cover_url} alt={pair.left?.book_title || 'Left cover'} style={styles.coverImage} />
+                  <img src={pair.right?.cover_url} alt={pair.right?.book_title || 'Right cover'} style={styles.coverImage} />
+                </div>
+                <div style={{ ...styles.coverSeries, marginTop: 8 }}>
+                  {pair.left?.book_title || 'Unknown'}  |  {pair.right?.book_title || 'Unknown'}
                 </div>
               </article>
             ))}
@@ -213,6 +275,15 @@ const styles = {
     background: '#3a1414',
     color: '#ffd0d0',
     border: '1px solid #6a3030',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+    fontSize: 12
+  },
+  tip: {
+    background: '#14231a',
+    color: '#9fd9b2',
+    border: '1px solid #2f5a3d',
     borderRadius: 8,
     padding: 10,
     marginBottom: 12,

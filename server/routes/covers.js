@@ -300,10 +300,12 @@ router.get('/similarity-lab', async (req, res) => {
     const failedRows = hashed.filter(item => !item.hash);
     const clusters = buildSimilarityClusters(hashedRows, distanceThreshold);
     const nearestPairs = buildNearestPairs(hashedRows, 40);
+    const insights = computeSimilarityInsights(nearestPairs, distanceThreshold, clusters.length);
 
     res.json({
       target_series: seriesNames,
       distance_threshold: distanceThreshold,
+      insights,
       totals: {
         covers_considered: uniqueRecords.length,
         covers_hashed: hashedRows.length,
@@ -320,6 +322,95 @@ router.get('/similarity-lab', async (req, res) => {
         source: item.source,
         hash_error: item.hash_error || 'unknown'
       }))
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/similarity-lab/enrich', async (req, res) => {
+  try {
+    const seriesNames = parseSeriesNames(req.body?.series_names || req.query?.series_names);
+    const books = await fetchLabBooks(seriesNames);
+    const perBookLimit = 24;
+    let booksProcessed = 0;
+    let workResolved = 0;
+    let attemptedCandidates = 0;
+    let booksWithNoWork = 0;
+    let booksWithNoEditions = 0;
+    const errors = [];
+
+    for (const book of books) {
+      booksProcessed += 1;
+      try {
+        const workKey = await resolveOpenLibraryWork({
+          isbn: book.isbn,
+          title: book.title,
+          author: book.author_name,
+          logDebug: () => {}
+        });
+        if (!workKey) {
+          booksWithNoWork += 1;
+          continue;
+        }
+        workResolved += 1;
+        const editionsRaw = await fetchOpenLibraryEditions(workKey, 120, () => {});
+        const editions = editionsRaw
+          .map(edition => normalizeEdition(edition))
+          .filter(edition => edition && Array.isArray(edition.cover_urls) && edition.cover_urls.length > 0);
+        if (!editions.length) {
+          booksWithNoEditions += 1;
+          continue;
+        }
+        const coverUrls = [];
+        const seen = new Set();
+        for (const edition of editions) {
+          for (const coverUrl of edition.cover_urls) {
+            if (!coverUrl || seen.has(coverUrl)) continue;
+            seen.add(coverUrl);
+            coverUrls.push({
+              url: coverUrl,
+              isbn: edition.isbns[0] || null,
+              metadata: {
+                work_key: workKey,
+                edition_key: edition.edition_key,
+                title: edition.title,
+                publish_date: edition.publish_date,
+                all_isbns: edition.isbns
+              }
+            });
+            if (coverUrls.length >= perBookLimit) break;
+          }
+          if (coverUrls.length >= perBookLimit) break;
+        }
+
+        for (const item of coverUrls) {
+          await saveCoverCandidate({
+            bookId: book.id,
+            isbn: item.isbn,
+            coverUrl: item.url,
+            source: 'open_library_editions',
+            metadata: item.metadata
+          });
+          attemptedCandidates += 1;
+        }
+      } catch (err) {
+        errors.push({
+          book_id: book.id,
+          title: book.title,
+          error: err.message || 'unknown_error'
+        });
+      }
+    }
+
+    res.json({
+      target_series: seriesNames,
+      books_processed: booksProcessed,
+      works_resolved: workResolved,
+      books_with_no_work: booksWithNoWork,
+      books_with_no_editions: booksWithNoEditions,
+      attempted_candidates: attemptedCandidates,
+      errors
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -636,6 +727,33 @@ function dedupeCoverRows(rows) {
   return out;
 }
 
+async function fetchLabBooks(seriesNames) {
+  const { rows } = await pool.query(`
+    SELECT
+      b.id,
+      b.title,
+      b.isbn,
+      s.name AS series_name,
+      a.name AS author_name
+    FROM books b
+    JOIN series s ON s.id = b.series_id
+    LEFT JOIN authors a ON a.id = b.author_id
+    WHERE EXISTS (
+      SELECT 1
+      FROM unnest($1::text[]) AS needle
+      WHERE lower(s.name) LIKE '%' || needle || '%'
+    )
+    ORDER BY s.name, b.series_order NULLS LAST, b.id
+  `, [seriesNames.map(name => name.toLowerCase())]);
+  return rows.map(row => ({
+    id: Number(row.id),
+    title: row.title || null,
+    isbn: row.isbn || null,
+    series_name: row.series_name || null,
+    author_name: row.author_name || null
+  }));
+}
+
 async function getPerceptualHashForUrl(url) {
   const normalizedUrl = String(url || '').trim();
   if (!normalizedUrl) return { hash: null, error: 'missing_url' };
@@ -870,6 +988,27 @@ function buildNearestPairs(items, limit) {
       || String(a.left.book_title || '').localeCompare(String(b.left.book_title || ''))
     ))
     .slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function computeSimilarityInsights(nearestPairs, threshold, clusterCount) {
+  const safePairs = Array.isArray(nearestPairs) ? nearestPairs : [];
+  const finitePairs = safePairs.filter(pair => Number.isFinite(Number(pair.distance)));
+  const closestDistance = finitePairs.length ? Number(finitePairs[0].distance) : null;
+  const recommendation = closestDistance == null
+    ? null
+    : Math.max(0, Math.min(30, Math.round(closestDistance)));
+  const mode = clusterCount > 0
+    ? 'clusters_found'
+    : closestDistance == null
+      ? 'no_pairs'
+      : threshold < closestDistance
+        ? 'increase_threshold'
+        : 'insufficient_alternates_or_high_variance';
+  return {
+    mode,
+    closest_pair_distance: closestDistance,
+    suggested_threshold_for_first_cluster: recommendation
+  };
 }
 
 function pairKey(left, right) {
