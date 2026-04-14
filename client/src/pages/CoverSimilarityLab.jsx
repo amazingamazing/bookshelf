@@ -7,6 +7,7 @@ export default function CoverSimilarityLab() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [copiedAt, setCopiedAt] = useState(0)
 
   const loadAnalysis = async (distanceValue = distance) => {
     setLoading(true)
@@ -38,6 +39,21 @@ export default function CoverSimilarityLab() {
     return { duplicates, singles }
   }, [data])
 
+  const copyDebug = async () => {
+    const payload = {
+      copied_at: new Date().toISOString(),
+      distance,
+      error: error || null,
+      data
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setCopiedAt(Date.now())
+    } catch {
+      setError('Could not copy debug payload to clipboard')
+    }
+  }
+
   return (
     <div style={styles.page}>
       <h1 style={styles.title}>Cover Similarity Lab</h1>
@@ -60,9 +76,14 @@ export default function CoverSimilarityLab() {
             style={{ width: '100%' }}
           />
         </div>
-        <button onClick={() => loadAnalysis(distance)} disabled={loading} style={styles.reloadBtn}>
-          {loading ? 'Running analysis...' : 'Reload analysis'}
-        </button>
+        <div style={styles.actionRow}>
+          <button onClick={() => loadAnalysis(distance)} disabled={loading} style={styles.reloadBtn}>
+            {loading ? 'Running analysis...' : 'Reload analysis'}
+          </button>
+          <button onClick={copyDebug} style={styles.reloadBtn}>
+            {Date.now() - copiedAt < 2200 ? 'Copied' : 'Copy Debug'}
+          </button>
+        </div>
       </div>
 
       {error && <div style={styles.error}>Error: {error}</div>}
@@ -169,6 +190,10 @@ const styles = {
     padding: '8px 12px',
     fontSize: 12,
     cursor: 'pointer'
+  },
+  actionRow: {
+    display: 'flex',
+    gap: 8
   },
   summaryCard: {
     background: '#1a1814',

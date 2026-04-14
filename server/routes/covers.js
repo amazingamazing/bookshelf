@@ -673,7 +673,7 @@ async function getPerceptualHashForUrl(url) {
 async function computePHashHex(buffer) {
   const image = await Jimp.read(buffer);
   image.resize({ w: 32, h: 32 });
-  image.grayscale();
+  image.greyscale();
   const pixels = [];
   for (let y = 0; y < 32; y += 1) {
     const row = [];

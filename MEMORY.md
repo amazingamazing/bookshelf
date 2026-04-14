@@ -19,6 +19,7 @@
 - Cinema backend fan-art retrieval now includes fallback retries (series-id + query-based attempts) and shuffled merge logic for better variety
 - Cover Similarity Lab page + API added for ASOIAF / Wheel of Time / Harry Potter using perceptual hashing and adjustable Hamming-distance clustering
 - Cover Similarity Lab hashing fix: switched to module-level `intToRGBA` export for Jimp v1 compatibility (unblocks pHash generation)
+- Cover Similarity Lab hashing fix: use `image.greyscale()` for Jimp v1 API compatibility and added one-click debug payload copy on lab page
 - Tier list hides series with zero associated books; series view hides rating when a series has no books
 - Deployed on Render
 
