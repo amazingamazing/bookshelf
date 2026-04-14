@@ -21,6 +21,7 @@
 - Cover Similarity Lab hashing fix: switched to module-level `intToRGBA` export for Jimp v1 compatibility (unblocks pHash generation)
 - Cover Similarity Lab hashing fix: use `image.greyscale()` for Jimp v1 API compatibility and added one-click debug payload copy on lab page
 - Cover Similarity Lab now supports one-click alternate-cover harvesting (Open Library editions per target-series book) and nearest-pair threshold guidance
+- Cover Similarity Lab comparisons are now scoped to same-book covers by default to avoid cross-book hash collisions at higher thresholds
 - Tier list hides series with zero associated books; series view hides rating when a series has no books
 - Deployed on Render
 

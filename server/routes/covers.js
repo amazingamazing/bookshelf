@@ -210,6 +210,7 @@ router.get('/similarity-lab', async (req, res) => {
     const distanceThreshold = Number.isFinite(requestedDistance)
       ? Math.max(0, Math.min(30, Math.round(requestedDistance)))
       : 8;
+    const comparisonScope = parseComparisonScope(req.query.comparison_scope);
     const seriesNames = parseSeriesNames(req.query.series_names);
 
     const { rows } = await pool.query(`
@@ -298,13 +299,14 @@ router.get('/similarity-lab', async (req, res) => {
 
     const hashedRows = hashed.filter(item => item.hash);
     const failedRows = hashed.filter(item => !item.hash);
-    const clusters = buildSimilarityClusters(hashedRows, distanceThreshold);
-    const nearestPairs = buildNearestPairs(hashedRows, 40);
+    const clusters = buildSimilarityClusters(hashedRows, distanceThreshold, comparisonScope);
+    const nearestPairs = buildNearestPairs(hashedRows, 40, comparisonScope);
     const insights = computeSimilarityInsights(nearestPairs, distanceThreshold, clusters.length);
 
     res.json({
       target_series: seriesNames,
       distance_threshold: distanceThreshold,
+      comparison_scope: comparisonScope,
       insights,
       totals: {
         covers_considered: uniqueRecords.length,
@@ -703,6 +705,12 @@ function parseSeriesNames(rawSeriesNames) {
   return TARGET_SERIES_NAMES;
 }
 
+function parseComparisonScope(rawScope) {
+  const value = String(rawScope || '').trim().toLowerCase();
+  if (value === 'all' || value === 'global') return 'all';
+  return 'same_book';
+}
+
 function dedupeCoverRows(rows) {
   const out = [];
   const seen = new Set();
@@ -865,12 +873,13 @@ function hammingDistanceHex(a, b) {
   return distance;
 }
 
-function buildSimilarityClusters(items, threshold) {
+function buildSimilarityClusters(items, threshold, comparisonScope) {
   const union = new UnionFind(items.length);
   const distances = new Map();
 
   for (let i = 0; i < items.length; i += 1) {
     for (let j = i + 1; j < items.length; j += 1) {
+      if (!isComparablePair(items[i], items[j], comparisonScope)) continue;
       const distance = hammingDistanceHex(items[i].hash, items[j].hash);
       distances.set(pairKey(i, j), distance);
       if (distance <= threshold) union.union(i, j);
@@ -957,10 +966,11 @@ function pickClusterAnchor(indices, distances) {
   return bestIndex;
 }
 
-function buildNearestPairs(items, limit) {
+function buildNearestPairs(items, limit, comparisonScope) {
   const pairs = [];
   for (let i = 0; i < items.length; i += 1) {
     for (let j = i + 1; j < items.length; j += 1) {
+      if (!isComparablePair(items[i], items[j], comparisonScope)) continue;
       const distance = hammingDistanceHex(items[i].hash, items[j].hash);
       pairs.push({
         distance,
@@ -988,6 +998,11 @@ function buildNearestPairs(items, limit) {
       || String(a.left.book_title || '').localeCompare(String(b.left.book_title || ''))
     ))
     .slice(0, Math.max(0, Number(limit) || 0));
+}
+
+function isComparablePair(left, right, comparisonScope) {
+  if (comparisonScope === 'all') return true;
+  return Number(left?.book_id) === Number(right?.book_id);
 }
 
 function computeSimilarityInsights(nearestPairs, threshold, clusterCount) {

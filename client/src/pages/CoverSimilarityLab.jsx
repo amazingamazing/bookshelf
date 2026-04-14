@@ -14,7 +14,10 @@ export default function CoverSimilarityLab() {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ distance: String(distanceValue) })
+      const params = new URLSearchParams({
+        distance: String(distanceValue),
+        comparison_scope: 'same_book'
+      })
       const response = await fetch(`/api/covers/similarity-lab?${params.toString()}`)
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Failed to analyze covers')
@@ -79,6 +82,9 @@ export default function CoverSimilarityLab() {
       <h1 style={styles.title}>Cover Similarity Lab</h1>
       <p style={styles.subtitle}>
         Perceptual hash clustering across A Song of Ice and Fire, Wheel of Time, and Harry Potter.
+      </p>
+      <p style={{ ...styles.subtitle, marginTop: -8 }}>
+        Comparison scope: same book only (no cross-book matching).
       </p>
 
       <div style={styles.controlsCard}>
