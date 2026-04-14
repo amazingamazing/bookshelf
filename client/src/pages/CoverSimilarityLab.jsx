@@ -102,6 +102,26 @@ export default function CoverSimilarityLab() {
           </div>
         </section>
       ))}
+
+      {Boolean(data?.failures?.length) && (
+        <section style={styles.clusterSection}>
+          <div style={styles.clusterHeader}>
+            <div style={styles.clusterTitle}>Hash Failures</div>
+            <div style={styles.clusterMeta}>{data.failures.length} failed cover{data.failures.length === 1 ? '' : 's'}</div>
+          </div>
+          <div style={{ ...styles.coverGrid, gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+            {data.failures.slice(0, 30).map((failure, index) => (
+              <article key={`${failure.cover_url}-${index}`} style={styles.coverCard}>
+                <div style={styles.coverBook}>{failure.book_title || 'Unknown title'}</div>
+                <div style={styles.coverSeries}>{failure.series_name || 'Unknown series'}</div>
+                <div style={{ ...styles.coverSeries, marginTop: 6, color: '#d98b8b' }}>
+                  {failure.hash_error || 'unknown'}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
     </div>
   )
 }

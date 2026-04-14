@@ -1,6 +1,6 @@
 const router = require('express').Router();
 const fetch = require('node-fetch');
-const { Jimp } = require('jimp');
+const { Jimp, intToRGBA } = require('jimp');
 const { pool } = require('../db');
 
 const FALLBACK_CHAIN = [
@@ -678,7 +678,7 @@ async function computePHashHex(buffer) {
   for (let y = 0; y < 32; y += 1) {
     const row = [];
     for (let x = 0; x < 32; x += 1) {
-      const rgba = Jimp.intToRGBA(image.getPixelColor(x, y));
+      const rgba = intToRGBA(image.getPixelColor(x, y));
       row.push(Number(rgba.r || 0));
     }
     pixels.push(row);
