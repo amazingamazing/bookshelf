@@ -41,11 +41,11 @@ router.get('/deviantart', async (req, res) => {
       `, [rawBookId]);
       if (!rows[0]) return res.status(404).json({ error: 'Book not found' });
       const b = rows[0];
-      const pieces = [b.title, b.series_name, b.author_name, 'fan art'];
+      const pieces = [b.title, b.series_name, b.author_name];
       searchText = pieces.filter(Boolean).join(' ');
       searchQueries.push(searchText);
-      searchQueries.push([b.title, 'fan art'].filter(Boolean).join(' '));
-      if (b.series_name) searchQueries.push([b.series_name, 'fan art'].filter(Boolean).join(' '));
+      searchQueries.push([b.title].filter(Boolean).join(' '));
+      if (b.series_name) searchQueries.push([b.series_name].filter(Boolean).join(' '));
       if (b.title) relevanceHints.push(b.title);
       if (b.series_name) relevanceHints.push(b.series_name);
     }
@@ -80,21 +80,21 @@ router.get('/deviantart', async (req, res) => {
       if (!rows[0]) return res.status(404).json({ error: 'Series not found' });
       const s = rows[0];
 
-      const seriesQuery = [s.series_name, s.author_name, 'fan art'].filter(Boolean).join(' ');
+      const seriesQuery = [s.series_name, s.author_name].filter(Boolean).join(' ');
       searchQueries.push(seriesQuery);
-      searchQueries.push([s.series_name, 'fan art'].filter(Boolean).join(' '));
+      searchQueries.push([s.series_name].filter(Boolean).join(' '));
       const acronym = buildSeriesAcronym(s.series_name);
-      if (acronym) searchQueries.push([acronym, 'fan art'].filter(Boolean).join(' '));
+      if (acronym) searchQueries.push([acronym].filter(Boolean).join(' '));
       if (s.series_name) relevanceHints.push(s.series_name);
 
       if (s.first_book_title) {
-        const bookOneQuery = [s.first_book_title, s.author_name, 'fan art'].filter(Boolean).join(' ');
+        const bookOneQuery = [s.first_book_title, s.author_name].filter(Boolean).join(' ');
         searchQueries.push(bookOneQuery);
-        searchQueries.push([s.first_book_title, 'fan art'].filter(Boolean).join(' '));
+        searchQueries.push([s.first_book_title].filter(Boolean).join(' '));
         const shortBookTitle = stripBookSubtitle(s.first_book_title);
         if (shortBookTitle && shortBookTitle !== s.first_book_title) {
-          searchQueries.push([shortBookTitle, 'fan art'].filter(Boolean).join(' '));
-          searchQueries.push([shortBookTitle, s.series_name, 'fan art'].filter(Boolean).join(' '));
+          searchQueries.push([shortBookTitle].filter(Boolean).join(' '));
+          searchQueries.push([shortBookTitle, s.series_name].filter(Boolean).join(' '));
           relevanceHints.push(shortBookTitle);
         }
         relevanceHints.push(s.first_book_title);
@@ -104,8 +104,8 @@ router.get('/deviantart', async (req, res) => {
       for (const title of sampleTitles.slice(0, 4)) {
         const cleanedTitle = stripBookSubtitle(title);
         if (!cleanedTitle) continue;
-        searchQueries.push([cleanedTitle, 'fan art'].filter(Boolean).join(' '));
-        if (s.series_name) searchQueries.push([cleanedTitle, s.series_name, 'fan art'].filter(Boolean).join(' '));
+        searchQueries.push([cleanedTitle].filter(Boolean).join(' '));
+        if (s.series_name) searchQueries.push([cleanedTitle, s.series_name].filter(Boolean).join(' '));
         relevanceHints.push(cleanedTitle);
       }
     }
@@ -667,7 +667,7 @@ function buildRelevanceProfile(query) {
     .filter(token => token.length >= 3)
     .filter(token => !isNoiseToken(token));
   const strongTokens = tokens.filter(token => token.length >= 5);
-  const phrase = String(query || '').toLowerCase().replace(/\s+fan\s+art/g, '').trim();
+  const phrase = String(query || '').toLowerCase().trim();
   return { query, tokens, strongTokens, phrase };
 }
 

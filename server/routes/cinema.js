@@ -130,9 +130,9 @@ async function fetchSeriesFanartViaExistingEndpoint(req, series, limit) {
   if (merged.length >= 6) return shuffleArray(merged);
 
   const queryFallbacks = [];
-  if (seriesName) queryFallbacks.push(`${seriesName} fan art`);
-  if (firstBookTitle) queryFallbacks.push(`${firstBookTitle} fan art`);
-  if (seriesName && authorName) queryFallbacks.push(`${seriesName} ${authorName} fan art`);
+  if (seriesName) queryFallbacks.push(seriesName);
+  if (firstBookTitle) queryFallbacks.push(firstBookTitle);
+  if (seriesName && authorName) queryFallbacks.push(`${seriesName} ${authorName}`);
 
   for (const query of queryFallbacks) {
     const byQuery = await fetchFanartByQuery(baseUrlCandidates, query, {
