@@ -11,6 +11,9 @@
 - Edition resolver now includes title fallback variants (full title, title-only, subtitle-stripped) to handle Open Library misses on long subtitle formats
 - Fan art on series pages (DeviantArt RSS + optional API metadata ranking)
 - Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
+- Reddit fan art prototype added on series pages (section below DeviantArt) using public Reddit JSON listing endpoints
+- Claude-powered subreddit/query discovery endpoint added (`POST /api/ai/reddit-discover`) with sanitized output + fallback seeds
+- Reddit fan art endpoint added (`GET /api/fanart/reddit`) with per-subreddit caps, dedupe, partial-failure handling, and timeouts
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -37,6 +40,8 @@
 - [ ] Add better fan-art fallback strategy for low-signal series (currently some series still return covers-only)
 - [ ] Tune fan art-to-cover blend ratio and add optional user-facing "fan art intensity" control
 - [ ] improve creator extraction consistency from DeviantArt links/metadata
+- [ ] Reddit fan art relevance/quality tuning (subreddit selection + query quality still early)
+- [ ] Migrate Reddit fan art from public JSON prototype to official OAuth API integration
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript
 - [ ] using inline styling not CSS files
@@ -70,6 +75,7 @@
 - Never store: image files, full-res covers or fan art on server
 - Building curated ISBN-to-editions mapping over time (ISBNs are just numbers, safe to own)
 - Fan art sources: DeviantArt API (primary, official, attribution-ready), Bing Image Search (fallback)
+- Reddit source is currently public JSON prototype with no OAuth (good for exploration; needs OAuth hardening for production)
 - Commercial fan art use requires rethinking — current inline-linking model is most defensible
 
 ## Cover art sources (waterfall order)
@@ -130,6 +136,7 @@
 ## Data sources investigated
 - Bowker Book Data (proquest): official US ISBN agency, 50M+ records including audiobooks, series data, readalikes — enterprise pricing, worth revisiting if app goes commercial
 - DeviantArt: registered app, have client_id, using RSS + optional API metadata
+- Reddit: public JSON listing integration added for fan art discovery/testing; OAuth migration planned
 - Goodreads Quotes / Quotable.io / Wikiquote: planned for quote cards
 - Unsplash API: free, commercially licensed, for travel/lifestyle/food imagery
 - NASA Image API: free, for science/space books

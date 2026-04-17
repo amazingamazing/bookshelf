@@ -263,6 +263,80 @@ router.get('/deviantart', async (req, res) => {
   }
 });
 
+router.get('/reddit', async (req, res) => {
+  try {
+    const rawSeriesId = Number(req.query.series_id);
+    const rawLimit = Number(req.query.limit);
+    const allowMature = parseBoolean(req.query.allow_mature, false);
+    const perSubredditLimit = Math.max(1, Math.min(8, Number(req.query.per_subreddit_limit) || 5));
+    const subredditLimit = Math.max(1, Math.min(12, Number(req.query.subreddit_limit) || 6));
+    const overallLimit = Math.max(5, Math.min(120, Number.isFinite(rawLimit) ? rawLimit : perSubredditLimit * subredditLimit));
+    if (!Number.isFinite(rawSeriesId)) {
+      return res.status(400).json({ error: 'Provide series_id' });
+    }
+
+    const series = await loadSeriesContext(rawSeriesId);
+    if (!series) return res.status(404).json({ error: 'Series not found' });
+
+    const discovery = await discoverRedditTargets(req, series);
+    const subreddits = (discovery.subreddits || []).slice(0, subredditLimit);
+    const queries = (discovery.queries || []).slice(0, 8);
+    if (!subreddits.length || !queries.length) {
+      return res.json({
+        source: 'reddit_public_json',
+        count: 0,
+        series,
+        subreddits,
+        queries,
+        debug: {
+          discovery_source: discovery.source || 'fallback',
+          subreddit_errors: [],
+          subreddit_counts: {}
+        },
+        items: []
+      });
+    }
+
+    const items = [];
+    const seenUrls = new Set();
+    const subredditErrors = [];
+    const subredditCounts = {};
+    for (const subreddit of subreddits) {
+      const result = await collectRedditImagesForSubreddit(subreddit, queries, {
+        perSubredditLimit,
+        allowMature
+      });
+      subredditCounts[subreddit] = result.items.length;
+      if (result.error) subredditErrors.push({ subreddit, error: result.error });
+      for (const item of result.items) {
+        const imageUrl = String(item.image_url || '').trim();
+        if (!imageUrl || seenUrls.has(imageUrl)) continue;
+        seenUrls.add(imageUrl);
+        items.push(item);
+        if (items.length >= overallLimit) break;
+      }
+      if (items.length >= overallLimit) break;
+    }
+
+    res.json({
+      source: 'reddit_public_json',
+      count: items.length,
+      series,
+      subreddits,
+      queries,
+      discovery_source: discovery.source || 'fallback',
+      debug: {
+        discovery_source: discovery.source || 'fallback',
+        subreddit_errors: subredditErrors,
+        subreddit_counts: subredditCounts
+      },
+      items
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function searchDeviantArtRss(searchText, limit, { allowMature }) {
   const rssUrl = `https://backend.deviantart.com/rss.xml?q=${encodeURIComponent(searchText)}&type=deviation&mature_content=${allowMature ? 'true' : 'false'}&include_mature=${allowMature ? 'true' : 'false'}`;
   const feedRes = await fetch(rssUrl);
@@ -271,6 +345,267 @@ async function searchDeviantArtRss(searchText, limit, { allowMature }) {
   return parseRssItems(xml)
     .filter(item => item.title && item.link && item.image_url)
     .slice(0, limit);
+}
+
+async function loadSeriesContext(seriesId) {
+  const { rows } = await pool.query(`
+    SELECT
+      s.id,
+      s.name AS series_name,
+      a.name AS author_name,
+      (
+        SELECT b1.title
+        FROM books b1
+        WHERE b1.series_id = s.id
+        ORDER BY b1.series_order NULLS LAST, b1.id
+        LIMIT 1
+      ) AS first_book_title
+    FROM series s
+    LEFT JOIN authors a ON a.id = s.author_id
+    WHERE s.id = $1
+    LIMIT 1
+  `, [seriesId]);
+  return rows[0] || null;
+}
+
+async function discoverRedditTargets(req, series) {
+  const fallback = {
+    source: 'fallback',
+    subreddits: buildFallbackSubreddits(series),
+    queries: buildFallbackQueries(series)
+  };
+  try {
+    const protocol = req.get('x-forwarded-proto') || req.protocol || 'http';
+    const host = req.get('x-forwarded-host') || req.get('host');
+    if (!host) return fallback;
+    const endpoint = `${protocol}://${host}/api/ai/reddit-discover`;
+    const response = await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ series_id: series.id })
+    }, 12000);
+    if (!response.ok) return fallback;
+    const data = await response.json();
+    const subreddits = dedupeLowerStrings(data?.subreddits).slice(0, 12);
+    const queries = dedupeQueryStrings(data?.queries).slice(0, 10);
+    if (!subreddits.length || !queries.length) return fallback;
+    return { source: 'claude', subreddits, queries };
+  } catch {
+    return fallback;
+  }
+}
+
+async function collectRedditImagesForSubreddit(subreddit, queries, options) {
+  const perSubredditLimit = Math.max(1, Number(options?.perSubredditLimit) || 5);
+  const allowMature = Boolean(options?.allowMature);
+  const safeSubreddit = String(subreddit || '').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
+  if (!safeSubreddit) return { items: [], error: 'invalid_subreddit' };
+
+  const out = [];
+  const seenUrls = new Set();
+  const pickedQueries = (Array.isArray(queries) ? queries : []).slice(0, 4);
+  try {
+    for (const query of pickedQueries) {
+      const path = `https://www.reddit.com/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=all&limit=35&raw_json=1`;
+      const posts = await fetchRedditListing(path);
+      pushImagesFromPosts(posts, {
+        output: out,
+        seenUrls,
+        perSubredditLimit,
+        subreddit: safeSubreddit,
+        queryUsed: query,
+        allowMature
+      });
+      if (out.length >= perSubredditLimit) return { items: out };
+    }
+
+    for (const mode of ['hot', 'new']) {
+      const path = `https://www.reddit.com/r/${safeSubreddit}/${mode}.json?limit=35&raw_json=1`;
+      const posts = await fetchRedditListing(path);
+      pushImagesFromPosts(posts, {
+        output: out,
+        seenUrls,
+        perSubredditLimit,
+        subreddit: safeSubreddit,
+        queryUsed: mode,
+        allowMature
+      });
+      if (out.length >= perSubredditLimit) return { items: out };
+    }
+
+    return { items: out };
+  } catch (err) {
+    return { items: out, error: err?.message || 'fetch_failed' };
+  }
+}
+
+async function fetchRedditListing(url) {
+  const response = await fetchWithTimeout(url, {
+    headers: {
+      'User-Agent': 'bookshelf-fanart-prototype/1.0'
+    }
+  }, 9000);
+  if (!response.ok) {
+    throw new Error(`reddit_status_${response.status}`);
+  }
+  const data = await response.json();
+  return (data?.data?.children || []).map(item => item?.data).filter(Boolean);
+}
+
+function pushImagesFromPosts(posts, options) {
+  const output = options?.output || [];
+  const seenUrls = options?.seenUrls || new Set();
+  const perSubredditLimit = Math.max(1, Number(options?.perSubredditLimit) || 5);
+  const subreddit = String(options?.subreddit || '');
+  const queryUsed = String(options?.queryUsed || '');
+  const allowMature = Boolean(options?.allowMature);
+
+  for (const post of posts || []) {
+    if (output.length >= perSubredditLimit) break;
+    if (!allowMature && Boolean(post?.over_18)) continue;
+    const imageCandidates = extractImageUrlsFromRedditPost(post);
+    if (!imageCandidates.length) continue;
+    for (const imageUrl of imageCandidates) {
+      if (output.length >= perSubredditLimit) break;
+      if (!imageUrl || seenUrls.has(imageUrl)) continue;
+      seenUrls.add(imageUrl);
+      output.push({
+        source: 'reddit',
+        image_url: imageUrl,
+        post_url: buildRedditPostUrl(post),
+        title: String(post?.title || '').trim() || null,
+        subreddit,
+        author: String(post?.author || '').trim() || null,
+        score: Number(post?.score) || 0,
+        created_utc: Number(post?.created_utc) || null,
+        query_used: queryUsed
+      });
+    }
+  }
+}
+
+function extractImageUrlsFromRedditPost(post) {
+  const out = [];
+  const push = (value) => {
+    const normalized = normalizeImageUrl(value);
+    if (!normalized) return;
+    if (!out.includes(normalized)) out.push(normalized);
+  };
+
+  push(post?.url_overridden_by_dest);
+  push(post?.preview?.images?.[0]?.source?.url);
+  push(post?.thumbnail);
+
+  const mediaMetadata = post?.media_metadata;
+  if (mediaMetadata && typeof mediaMetadata === 'object') {
+    for (const metadata of Object.values(mediaMetadata)) {
+      push(metadata?.s?.u);
+      push(metadata?.s?.gif);
+    }
+  }
+
+  return out.filter(isLikelyImageUrl);
+}
+
+function normalizeImageUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === 'self' || raw === 'default' || raw === 'nsfw' || raw === 'spoiler') return '';
+  return raw
+    .replace(/&amp;/g, '&')
+    .replace(/&#x2F;/gi, '/')
+    .replace(/&#47;/gi, '/');
+}
+
+function isLikelyImageUrl(url) {
+  const value = String(url || '').trim().toLowerCase();
+  if (!value.startsWith('http://') && !value.startsWith('https://')) return false;
+  if (/(i\.redd\.it|i\.redditmedia\.com|preview\.redd\.it|imgur\.com|deviantart\.com|artstation\.com)/.test(value)) {
+    return true;
+  }
+  return /\.(png|jpe?g|webp|gif)(\?|$)/.test(value);
+}
+
+function buildRedditPostUrl(post) {
+  const permalink = String(post?.permalink || '').trim();
+  if (permalink) return `https://www.reddit.com${permalink}`;
+  const fallback = String(post?.url || '').trim();
+  return fallback || null;
+}
+
+function dedupeLowerStrings(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const normalized = String(value || '')
+      .trim()
+      .replace(/^\/?r\//i, '')
+      .replace(/[^a-zA-Z0-9_]/g, '')
+      .toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function dedupeQueryStrings(values) {
+  const out = [];
+  const seen = new Set();
+  for (const value of values || []) {
+    const normalized = String(value || '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function buildFallbackSubreddits(series) {
+  const seriesName = String(series?.series_name || '').toLowerCase();
+  const out = [
+    'fanart',
+    'digitalart',
+    'characterdrawing',
+    'imaginarynetwork',
+    'fantasy',
+    'books',
+    'litrpg',
+    'progressionfantasy'
+  ];
+  if (seriesName.includes('warhammer')) out.unshift('warhammer40k');
+  if (seriesName.includes('dungeon')) out.unshift('dungeoncrawlercarl');
+  return dedupeLowerStrings(out).slice(0, 12);
+}
+
+function buildFallbackQueries(series) {
+  const seriesName = String(series?.series_name || '').trim();
+  const authorName = String(series?.author_name || '').trim();
+  const firstBookTitle = String(series?.first_book_title || '').trim();
+  const out = [];
+  if (seriesName) out.push(seriesName);
+  if (seriesName && authorName) out.push(`${seriesName} ${authorName}`);
+  if (firstBookTitle) out.push(firstBookTitle);
+  if (firstBookTitle && seriesName) out.push(`${firstBookTitle} ${seriesName}`);
+  out.push('fan art');
+  return dedupeQueryStrings(out).slice(0, 10);
+}
+
+async function fetchWithTimeout(url, init, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1, Number(timeoutMs) || 10000));
+  try {
+    return await fetch(url, {
+      ...(init || {}),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function parseRssItems(xml) {

@@ -36,6 +36,15 @@ export default function SeriesView() {
     metadataReason: null,
     debug: null
   })
+  const [redditFanart, setRedditFanart] = useState({
+    loading: false,
+    error: null,
+    items: [],
+    subreddits: [],
+    queries: [],
+    debug: null,
+    discoverySource: null
+  })
   const [fanartPrefs, setFanartPrefs] = useState(() => readFanartPrefs())
   const [fanartControls, setFanartControls] = useState({
     sortMode: 'popular',
@@ -57,6 +66,7 @@ export default function SeriesView() {
   useEffect(() => {
     if (!series?.id) return
     loadSeriesFanart()
+    loadSeriesRedditFanart()
   }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap])
 
   useEffect(() => {
@@ -133,6 +143,49 @@ export default function SeriesView() {
         metadataEnrichment: false,
         metadataReason: null,
         debug: null
+      })
+    }
+  }
+
+  const loadSeriesRedditFanart = async () => {
+    setRedditFanart({
+      loading: true,
+      error: null,
+      items: [],
+      subreddits: [],
+      queries: [],
+      debug: null,
+      discoverySource: null
+    })
+    try {
+      const params = new URLSearchParams({
+        series_id: String(id),
+        limit: '40',
+        allow_mature: fanartPrefs.allowMature ? 'true' : 'false',
+        per_subreddit_limit: '5',
+        subreddit_limit: '6'
+      })
+      const res = await fetch(`/api/fanart/reddit?${params.toString()}`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch Reddit fan art')
+      setRedditFanart({
+        loading: false,
+        error: null,
+        items: Array.isArray(data.items) ? data.items : [],
+        subreddits: Array.isArray(data.subreddits) ? data.subreddits : [],
+        queries: Array.isArray(data.queries) ? data.queries : [],
+        debug: data.debug || null,
+        discoverySource: data.discovery_source || null
+      })
+    } catch (err) {
+      setRedditFanart({
+        loading: false,
+        error: err.message,
+        items: [],
+        subreddits: [],
+        queries: [],
+        debug: null,
+        discoverySource: null
       })
     }
   }
@@ -413,6 +466,79 @@ export default function SeriesView() {
                       ❤ {item.stats?.favourites || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
                     </div>
                   )}
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Reddit fan art */}
+      <div style={{ marginTop: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+          <h2 style={{ color: '#e8e4dc', fontSize: 18 }}>Fan art (Reddit)</h2>
+          <button onClick={loadSeriesRedditFanart} disabled={redditFanart.loading} style={actionBtn}>
+            {redditFanart.loading ? 'Searching...' : 'Refresh Reddit fan art'}
+          </button>
+        </div>
+
+        {redditFanart.subreddits?.length > 0 && (
+          <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 8 }}>
+            Subreddits: {redditFanart.subreddits.map(sub => `r/${sub}`).join(' | ')}
+          </div>
+        )}
+        {redditFanart.queries?.length > 0 && (
+          <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 8 }}>
+            Queries: {redditFanart.queries.join(' | ')}
+          </div>
+        )}
+        {redditFanart.discoverySource && (
+          <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
+            Discovery source: {redditFanart.discoverySource === 'claude' ? 'Claude' : 'Fallback'}
+          </div>
+        )}
+        {redditFanart.debug?.subreddit_counts && (
+          <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
+            Per subreddit: {Object.entries(redditFanart.debug.subreddit_counts).map(([subreddit, count]) => `r/${subreddit}=${count}`).join(' | ')}
+          </div>
+        )}
+
+        {redditFanart.error && (
+          <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{redditFanart.error}</div>
+        )}
+
+        {!redditFanart.loading && !redditFanart.error && redditFanart.items.length === 0 && (
+          <div style={{ color: '#9a9488', fontSize: 13 }}>
+            No Reddit fan-art image posts found yet for this series.
+          </div>
+        )}
+
+        {redditFanart.items.length > 0 && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
+            {redditFanart.items.map((item, i) => (
+              <a
+                key={`${item.post_url || item.image_url}-${i}`}
+                href={item.post_url || item.image_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{
+                  textDecoration: 'none',
+                  background: '#1a1814',
+                  border: '1px solid #2a2822',
+                  borderRadius: 8
+                }}
+              >
+                <div style={{ width: '100%', background: '#2a2822', padding: 8 }}>
+                  <img src={item.image_url} alt={item.title || 'Reddit fan art'} style={{ width: '100%', height: 'auto', maxHeight: 260, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+                </div>
+                <div style={{ padding: '8px 9px' }}>
+                  <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title || 'Untitled post'}</div>
+                  <div style={{ color: '#9a9488', fontSize: 11 }}>
+                    r/{item.subreddit || 'unknown'}{item.author ? ` • u/${item.author}` : ''}
+                  </div>
+                  <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
+                    query: {item.query_used || 'n/a'} • score: {Number(item.score || 0)}
+                  </div>
                 </div>
               </a>
             ))}
