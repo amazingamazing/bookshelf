@@ -414,31 +414,27 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
   const out = [];
   const seenUrls = new Set();
   const pickedQueries = buildRedditSearchQueries((Array.isArray(queries) ? queries : []).slice(0, 4));
+  const discoveredFlairs = new Set();
   const stats = {
     scanned_posts: 0,
     rejected_non_art: 0,
-    kept_posts: 0
+    kept_posts: 0,
+    discovered_flairs: [],
+    request_attempts: []
   };
   try {
-    for (const query of pickedQueries) {
-      const path = `https://www.reddit.com/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=all&limit=35&raw_json=1`;
-      const posts = await fetchRedditListing(path);
-      pushImagesFromPosts(posts, {
-        output: out,
-        seenUrls,
-        perSubredditLimit,
-        subreddit: safeSubreddit,
-        queryUsed: query,
-        allowMature,
-        stats
-      });
-      if (out.length >= perSubredditLimit) return { items: out, stats };
-    }
-
+    // Pull current subreddit traffic first so we can discover actual flair names (e.g. "Art")
     for (const mode of ['hot', 'new']) {
-      const path = `https://www.reddit.com/r/${safeSubreddit}/${mode}.json?limit=35&raw_json=1`;
-      const posts = await fetchRedditListing(path);
-      pushImagesFromPosts(posts, {
+      const path = `/r/${safeSubreddit}/${mode}.json?limit=35&raw_json=1`;
+      const listing = await fetchRedditListingByPath(path);
+      if (Array.isArray(listing.trace) && listing.trace.length) {
+        stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: mode })));
+      }
+      for (const post of listing.posts) {
+        const flair = String(post?.link_flair_text || '').trim();
+        if (flair) discoveredFlairs.add(flair);
+      }
+      pushImagesFromPosts(listing.posts, {
         output: out,
         seenUrls,
         perSubredditLimit,
@@ -447,26 +443,72 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         allowMature,
         stats
       });
-      if (out.length >= perSubredditLimit) return { items: out, stats };
+      if (out.length >= perSubredditLimit) {
+        stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+        return { items: out, stats };
+      }
     }
 
+    const flairQueries = buildFlairFocusedQueries(Array.from(discoveredFlairs));
+    const queryCandidates = dedupeQueryStrings([...flairQueries, ...pickedQueries]).slice(0, 14);
+
+    for (const query of queryCandidates) {
+      const path = `/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=all&limit=35&raw_json=1`;
+      const listing = await fetchRedditListingByPath(path);
+      if (Array.isArray(listing.trace) && listing.trace.length) {
+        stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: 'search', query })));
+      }
+      for (const post of listing.posts) {
+        const flair = String(post?.link_flair_text || '').trim();
+        if (flair) discoveredFlairs.add(flair);
+      }
+      pushImagesFromPosts(listing.posts, {
+        output: out,
+        seenUrls,
+        perSubredditLimit,
+        subreddit: safeSubreddit,
+        queryUsed: query,
+        allowMature,
+        stats
+      });
+      if (out.length >= perSubredditLimit) {
+        stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+        return { items: out, stats };
+      }
+    }
+
+    stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
     return { items: out, stats };
   } catch (err) {
+    stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
     return { items: out, error: err?.message || 'fetch_failed', stats };
   }
 }
 
-async function fetchRedditListing(url) {
-  const response = await fetchWithTimeout(url, {
-    headers: {
-      'User-Agent': 'bookshelf-fanart-prototype/1.0'
+async function fetchRedditListingByPath(path) {
+  const hosts = ['https://www.reddit.com', 'https://old.reddit.com', 'https://api.reddit.com'];
+  const trace = [];
+  for (const host of hosts) {
+    const url = `${host}${path}`;
+    try {
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          'User-Agent': 'bookshelf-fanart-prototype/1.0 (contact: local-dev)',
+          'Accept': 'application/json',
+          'Accept-Language': 'en-US,en;q=0.9'
+        }
+      }, 10000);
+      trace.push({ host, status: response.status });
+      if (!response.ok) continue;
+      const data = await response.json();
+      const posts = (data?.data?.children || []).map(item => item?.data).filter(Boolean);
+      return { posts, trace };
+    } catch (err) {
+      trace.push({ host, status: 'error', error: err?.message || 'request_failed' });
     }
-  }, 9000);
-  if (!response.ok) {
-    throw new Error(`reddit_status_${response.status}`);
   }
-  const data = await response.json();
-  return (data?.data?.children || []).map(item => item?.data).filter(Boolean);
+  const statusSummary = trace.map(t => `${t.host}:${t.status}`).join(',');
+  throw new Error(`reddit_all_hosts_failed:${statusSummary}`);
 }
 
 function pushImagesFromPosts(posts, options) {
@@ -664,6 +706,25 @@ function buildRedditSearchQueries(baseQueries) {
     out.push(`${cleaned} fanart`);
     out.push(`${cleaned} flair_name:\"Fan Art\"`);
     out.push(`${cleaned} flair_name:art`);
+  }
+  return dedupeQueryStrings(out).slice(0, 12);
+}
+
+function buildFlairFocusedQueries(flairs) {
+  const out = [];
+  const artFlairs = (Array.isArray(flairs) ? flairs : [])
+    .map(v => String(v || '').trim())
+    .filter(Boolean)
+    .filter(v => /\bart\b|fan[\s-]?art|illustration|drawing|sketch/i.test(v))
+    .slice(0, 8);
+  for (const flair of artFlairs) {
+    out.push(`flair_name:\"${flair}\"`);
+    out.push(`flair:\"${flair}\"`);
+  }
+  if (!out.length) {
+    out.push('flair_name:\"Art\"');
+    out.push('flair_name:\"Fan Art\"');
+    out.push('flair_name:\"Fanart\"');
   }
   return dedupeQueryStrings(out).slice(0, 12);
 }
