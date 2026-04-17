@@ -171,8 +171,12 @@ async function discoverRedditTargetsViaClaude(context) {
     'Return ONLY JSON with keys: subreddits, queries, notes.',
     'subreddits must be array of subreddit names only (no r/ prefix).',
     'queries must be short phrase queries for Reddit search, no punctuation-heavy strings.',
+    'Only include subreddits that are directly specific to this series/franchise/community.',
+    'Do NOT include generic art, fantasy, books, writing, or broad genre subreddits.',
+    'Prefer official/community-specific subreddits and obvious close variants (for example audiobook-focused variants).',
+    'Include art-oriented query variants and flair-oriented queries (fan art, fanart, illustration, flair_name:"Fan Art").',
     'Rank by likely fan-art relevance.',
-    'Return 6-12 subreddits and 4-10 queries.'
+    'Return 3-8 subreddits and 6-12 queries.'
   ].filter(Boolean).join('\n');
 
   const message = await client.messages.create({
@@ -194,20 +198,28 @@ function parseJsonPayload(value) {
 
 function sanitizeRedditDiscovery(aiResult, context) {
   const fallbackQueries = buildFallbackQueries(context);
-  const fallbackSubreddits = [
+  const strictFallbackSubreddits = buildSeriesSpecificFallbackSubreddits(context);
+  const genericBlocked = new Set([
     'fanart',
-    'ImaginaryNetwork',
-    'CharacterDrawing',
+    'imaginarynetwork',
+    'characterdrawing',
     'digitalart',
-    'Fantasy',
-    'progressionfantasy',
+    'fantasy',
+    'books',
     'litrpg',
-    'books'
-  ];
-  const subreddits = dedupeCleanSubreddits(aiResult?.subreddits || []).slice(0, 12);
+    'progressionfantasy',
+    'art',
+    'drawing',
+    'illustration'
+  ]);
+  const seriesTokens = tokenizeSeriesTerms(context);
+  const subreddits = dedupeCleanSubreddits(aiResult?.subreddits || [])
+    .filter(name => !genericBlocked.has(name))
+    .filter(name => isSeriesSpecificSubreddit(name, seriesTokens))
+    .slice(0, 12);
   const queries = dedupeCleanQueries(aiResult?.queries || []).slice(0, 10);
   return {
-    subreddits: subreddits.length ? subreddits : fallbackSubreddits,
+    subreddits: subreddits.length ? subreddits : strictFallbackSubreddits,
     queries: queries.length ? queries : fallbackQueries,
     notes: String(aiResult?.notes || '').trim() || null
   };
@@ -256,7 +268,42 @@ function buildFallbackQueries(context) {
   if (seriesName && authorName) fallback.push(`${seriesName} ${authorName}`);
   if (firstBookTitle) fallback.push(firstBookTitle);
   if (firstBookTitle && seriesName) fallback.push(`${firstBookTitle} ${seriesName}`);
+  if (seriesName) {
+    fallback.push(`${seriesName} fan art`);
+    fallback.push(`${seriesName} fanart`);
+    fallback.push(`${seriesName} illustration`);
+    fallback.push(`${seriesName} flair_name:\"Fan Art\"`);
+  }
   return dedupeCleanQueries(fallback).slice(0, 10);
+}
+
+function buildSeriesSpecificFallbackSubreddits(context) {
+  const candidates = new Set();
+  for (const token of tokenizeSeriesTerms(context)) {
+    if (!token) continue;
+    candidates.add(token);
+    candidates.add(`${token}series`);
+    candidates.add(`${token}books`);
+    candidates.add(`${token}audiobook`);
+  }
+  return dedupeCleanSubreddits(Array.from(candidates)).slice(0, 8);
+}
+
+function tokenizeSeriesTerms(context) {
+  const out = [];
+  const series = String(context?.series_name || '').toLowerCase();
+  for (const part of series.split(/[^a-z0-9]+/g)) {
+    if (part.length >= 3) out.push(part);
+  }
+  const collapsed = series.replace(/[^a-z0-9]/g, '');
+  if (collapsed.length >= 4) out.push(collapsed);
+  return Array.from(new Set(out));
+}
+
+function isSeriesSpecificSubreddit(name, seriesTokens) {
+  const normalized = String(name || '').toLowerCase();
+  if (!normalized) return false;
+  return (seriesTokens || []).some(token => normalized.includes(token));
 }
 
 module.exports = router;

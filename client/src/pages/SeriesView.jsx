@@ -54,6 +54,8 @@ export default function SeriesView() {
   })
   const [debugCopyStatus, setDebugCopyStatus] = useState('')
   const [showDebug, setShowDebug] = useState(false)
+  const [redditDebugCopyStatus, setRedditDebugCopyStatus] = useState('')
+  const [showRedditDebug, setShowRedditDebug] = useState(false)
   const hasAssociatedBooks = Number(series?.book_count || 0) > 0
 
   useEffect(() => {
@@ -218,6 +220,38 @@ export default function SeriesView() {
     } catch {
       setDebugCopyStatus('Copy failed')
       setTimeout(() => setDebugCopyStatus(''), 1800)
+    }
+  }
+
+  const copyRedditDebugDetails = async () => {
+    if (!redditFanart.debug) return
+    const payload = {
+      seriesId: id,
+      prefs: fanartPrefs,
+      subreddits: redditFanart.subreddits,
+      queries: redditFanart.queries,
+      discoverySource: redditFanart.discoverySource,
+      debug: redditFanart.debug,
+      items: redditFanart.items.map(item => ({
+        title: item.title,
+        subreddit: item.subreddit,
+        author: item.author,
+        query_used: item.query_used,
+        flair_text: item.flair_text,
+        art_signal: item.art_signal,
+        score: item.score,
+        post_url: item.post_url,
+        image_url: item.image_url
+      }))
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2))
+      setRedditDebugCopyStatus('Copied')
+      setShowRedditDebug(prev => !prev)
+      setTimeout(() => setRedditDebugCopyStatus(''), 1500)
+    } catch {
+      setRedditDebugCopyStatus('Copy failed')
+      setTimeout(() => setRedditDebugCopyStatus(''), 1800)
     }
   }
 
@@ -502,6 +536,24 @@ export default function SeriesView() {
             Per subreddit: {Object.entries(redditFanart.debug.subreddit_counts).map(([subreddit, count]) => `r/${subreddit}=${count}`).join(' | ')}
           </div>
         )}
+        {redditFanart.debug && (
+          <div style={{ marginBottom: 12 }}>
+            <button onClick={copyRedditDebugDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
+              {redditDebugCopyStatus || 'Copy Reddit debug details'}
+            </button>
+            {showRedditDebug && (
+              <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
+                <div>Discovery source: {redditFanart.debug.discovery_source || redditFanart.discoverySource || 'unknown'}</div>
+                <div>Subreddit errors: {redditFanart.debug.subreddit_errors?.length || 0}</div>
+                {redditFanart.debug.subreddit_stats && Object.entries(redditFanart.debug.subreddit_stats).map(([subreddit, stats]) => (
+                  <div key={subreddit}>
+                    r/{subreddit}: scanned {Number(stats?.scanned_posts || 0)} · non-art rejected {Number(stats?.rejected_non_art || 0)} · kept {Number(stats?.kept_posts || 0)}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {redditFanart.error && (
           <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{redditFanart.error}</div>
@@ -539,6 +591,11 @@ export default function SeriesView() {
                   <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
                     query: {item.query_used || 'n/a'} • score: {Number(item.score || 0)}
                   </div>
+                  {(item.flair_text || item.art_signal) && (
+                    <div style={{ color: '#6a6460', fontSize: 10 }}>
+                      flair: {item.flair_text || 'none'} • art: {item.art_signal || 'n/a'}
+                    </div>
+                  )}
                 </div>
               </a>
             ))}

@@ -301,12 +301,14 @@ router.get('/reddit', async (req, res) => {
     const seenUrls = new Set();
     const subredditErrors = [];
     const subredditCounts = {};
+    const subredditStats = {};
     for (const subreddit of subreddits) {
       const result = await collectRedditImagesForSubreddit(subreddit, queries, {
         perSubredditLimit,
         allowMature
       });
       subredditCounts[subreddit] = result.items.length;
+      subredditStats[subreddit] = result.stats || null;
       if (result.error) subredditErrors.push({ subreddit, error: result.error });
       for (const item of result.items) {
         const imageUrl = String(item.image_url || '').trim();
@@ -328,7 +330,8 @@ router.get('/reddit', async (req, res) => {
       debug: {
         discovery_source: discovery.source || 'fallback',
         subreddit_errors: subredditErrors,
-        subreddit_counts: subredditCounts
+        subreddit_counts: subredditCounts,
+        subreddit_stats: subredditStats
       },
       items
     });
@@ -369,9 +372,10 @@ async function loadSeriesContext(seriesId) {
 }
 
 async function discoverRedditTargets(req, series) {
+  const seriesTokens = tokenizeSeriesTerms(series);
   const fallback = {
     source: 'fallback',
-    subreddits: buildFallbackSubreddits(series),
+    subreddits: buildSeriesSpecificFallbackSubreddits(series),
     queries: buildFallbackQueries(series)
   };
   try {
@@ -386,7 +390,13 @@ async function discoverRedditTargets(req, series) {
     }, 12000);
     if (!response.ok) return fallback;
     const data = await response.json();
-    const subreddits = dedupeLowerStrings(data?.subreddits).slice(0, 12);
+    const blockedGeneric = new Set([
+      'fanart', 'digitalart', 'characterdrawing', 'imaginarynetwork', 'fantasy', 'books', 'art', 'drawing', 'illustration'
+    ]);
+    const subreddits = dedupeLowerStrings(data?.subreddits)
+      .filter(name => !blockedGeneric.has(name))
+      .filter(name => isSeriesSpecificSubreddit(name, seriesTokens))
+      .slice(0, 12);
     const queries = dedupeQueryStrings(data?.queries).slice(0, 10);
     if (!subreddits.length || !queries.length) return fallback;
     return { source: 'claude', subreddits, queries };
@@ -403,7 +413,12 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
 
   const out = [];
   const seenUrls = new Set();
-  const pickedQueries = (Array.isArray(queries) ? queries : []).slice(0, 4);
+  const pickedQueries = buildRedditSearchQueries((Array.isArray(queries) ? queries : []).slice(0, 4));
+  const stats = {
+    scanned_posts: 0,
+    rejected_non_art: 0,
+    kept_posts: 0
+  };
   try {
     for (const query of pickedQueries) {
       const path = `https://www.reddit.com/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=all&limit=35&raw_json=1`;
@@ -414,9 +429,10 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         perSubredditLimit,
         subreddit: safeSubreddit,
         queryUsed: query,
-        allowMature
+        allowMature,
+        stats
       });
-      if (out.length >= perSubredditLimit) return { items: out };
+      if (out.length >= perSubredditLimit) return { items: out, stats };
     }
 
     for (const mode of ['hot', 'new']) {
@@ -428,14 +444,15 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         perSubredditLimit,
         subreddit: safeSubreddit,
         queryUsed: mode,
-        allowMature
+        allowMature,
+        stats
       });
-      if (out.length >= perSubredditLimit) return { items: out };
+      if (out.length >= perSubredditLimit) return { items: out, stats };
     }
 
-    return { items: out };
+    return { items: out, stats };
   } catch (err) {
-    return { items: out, error: err?.message || 'fetch_failed' };
+    return { items: out, error: err?.message || 'fetch_failed', stats };
   }
 }
 
@@ -459,12 +476,20 @@ function pushImagesFromPosts(posts, options) {
   const subreddit = String(options?.subreddit || '');
   const queryUsed = String(options?.queryUsed || '');
   const allowMature = Boolean(options?.allowMature);
+  const stats = options?.stats;
 
   for (const post of posts || []) {
+    if (stats) stats.scanned_posts += 1;
     if (output.length >= perSubredditLimit) break;
     if (!allowMature && Boolean(post?.over_18)) continue;
+    const artSignal = detectArtSignal(post, queryUsed);
+    if (!artSignal.ok) {
+      if (stats) stats.rejected_non_art += 1;
+      continue;
+    }
     const imageCandidates = extractImageUrlsFromRedditPost(post);
     if (!imageCandidates.length) continue;
+    if (stats) stats.kept_posts += 1;
     for (const imageUrl of imageCandidates) {
       if (output.length >= perSubredditLimit) break;
       if (!imageUrl || seenUrls.has(imageUrl)) continue;
@@ -478,10 +503,27 @@ function pushImagesFromPosts(posts, options) {
         author: String(post?.author || '').trim() || null,
         score: Number(post?.score) || 0,
         created_utc: Number(post?.created_utc) || null,
-        query_used: queryUsed
+        query_used: queryUsed,
+        flair_text: String(post?.link_flair_text || '').trim() || null,
+        art_signal: artSignal.reason
       });
     }
   }
+}
+
+function detectArtSignal(post, queryUsed) {
+  const flair = String(post?.link_flair_text || '').toLowerCase();
+  const title = String(post?.title || '').toLowerCase();
+  const selftext = String(post?.selftext || '').toLowerCase();
+  const query = String(queryUsed || '').toLowerCase();
+  const hay = `${flair} ${title} ${selftext} ${query}`;
+  if (/\bfan[\s-]?art\b/.test(hay)) return { ok: true, reason: 'fan_art' };
+  if (/\billustration\b/.test(hay)) return { ok: true, reason: 'illustration' };
+  if (/\bartwork\b/.test(hay)) return { ok: true, reason: 'artwork' };
+  if (/\bsketch\b/.test(hay)) return { ok: true, reason: 'sketch' };
+  if (/\bdrawing\b/.test(hay)) return { ok: true, reason: 'drawing' };
+  if (/\bart\b/.test(flair)) return { ok: true, reason: 'flair_art' };
+  return { ok: false, reason: 'no_art_tag' };
 }
 
 function extractImageUrlsFromRedditPost(post) {
@@ -565,6 +607,18 @@ function dedupeQueryStrings(values) {
   return out;
 }
 
+function buildSeriesSpecificFallbackSubreddits(series) {
+  const tokens = tokenizeSeriesTerms(series);
+  const out = [];
+  for (const token of tokens) {
+    out.push(token);
+    out.push(`${token}series`);
+    out.push(`${token}books`);
+    out.push(`${token}audiobook`);
+  }
+  return dedupeLowerStrings(out).slice(0, 8);
+}
+
 function buildFallbackSubreddits(series) {
   const seriesName = String(series?.series_name || '').toLowerCase();
   const out = [
@@ -591,8 +645,47 @@ function buildFallbackQueries(series) {
   if (seriesName && authorName) out.push(`${seriesName} ${authorName}`);
   if (firstBookTitle) out.push(firstBookTitle);
   if (firstBookTitle && seriesName) out.push(`${firstBookTitle} ${seriesName}`);
-  out.push('fan art');
+  if (seriesName) {
+    out.push(`${seriesName} fan art`);
+    out.push(`${seriesName} fanart`);
+    out.push(`${seriesName} illustration`);
+    out.push(`${seriesName} flair_name:\"Fan Art\"`);
+  }
   return dedupeQueryStrings(out).slice(0, 10);
+}
+
+function buildRedditSearchQueries(baseQueries) {
+  const out = [];
+  for (const query of baseQueries || []) {
+    const cleaned = String(query || '').trim();
+    if (!cleaned) continue;
+    out.push(cleaned);
+    out.push(`${cleaned} fan art`);
+    out.push(`${cleaned} fanart`);
+    out.push(`${cleaned} flair_name:\"Fan Art\"`);
+    out.push(`${cleaned} flair_name:art`);
+  }
+  return dedupeQueryStrings(out).slice(0, 12);
+}
+
+function tokenizeSeriesTerms(series) {
+  const raw = String(series?.series_name || '').toLowerCase();
+  const out = [];
+  for (const token of raw.split(/[^a-z0-9]+/g)) {
+    if (token.length >= 3) out.push(token);
+  }
+  const collapsed = raw.replace(/[^a-z0-9]/g, '');
+  if (collapsed.length >= 4) out.push(collapsed);
+  return Array.from(new Set(out));
+}
+
+function isSeriesSpecificSubreddit(subreddit, tokens) {
+  const normalized = String(subreddit || '').toLowerCase();
+  if (!normalized) return false;
+  for (const token of (tokens || [])) {
+    if (normalized.includes(token)) return true;
+  }
+  return false;
 }
 
 async function fetchWithTimeout(url, init, timeoutMs) {
