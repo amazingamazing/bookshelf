@@ -457,20 +457,6 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         const title = String(post?.title || '').trim();
         if (title && flairSamples.get(flair).length < 3) flairSamples.get(flair).push(title);
       }
-      pushImagesFromPosts(listing.posts, {
-        output: out,
-        seenUrls,
-        perSubredditLimit,
-        subreddit: safeSubreddit,
-        queryUsed: pass.stage,
-        allowMature,
-        stats
-      });
-      if (out.length >= perSubredditLimit) {
-        stats.discovered_flairs = sortFlairsByCount(flairCounts);
-        stats.flair_counts = mapFlairCounts(flairCounts);
-        return { items: out, stats };
-      }
     }
 
     const pickedFlair = await pickBestRedditFlairForSeries({
