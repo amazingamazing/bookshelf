@@ -260,6 +260,7 @@ function dedupeCleanQueries(values) {
       .replace(/\s+/g, ' ')
       .trim();
     if (!cleaned || cleaned.length < 2 || cleaned.length > 80) continue;
+    if (/(^|\s)flair(_name)?:/i.test(cleaned)) continue;
     const key = cleaned.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);

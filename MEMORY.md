@@ -23,6 +23,8 @@
 - Reddit query candidate builder now drops conflicting `Fan Art/Fanart` flair queries once a concrete subreddit flair (e.g. `Art`) is selected
 - Reddit subreddit discovery now supports franchise aliases (e.g., ASOIAF/Game of Thrones variants) and soft-fallbacks to non-generic Claude candidates when strict token matching is too narrow
 - Reddit collector now retries/backs off on 429s and continues pass/query processing instead of aborting subreddit collection on first listing failure
+- Reddit discovery/search seed queries now strip raw `flair:`/`flair_name:` strings; flair queries are generated only from discovered subreddit flair names
+- Reddit collector now short-circuits after discovery when subreddit access is fully blocked (403) to avoid noisy doomed query storms
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)

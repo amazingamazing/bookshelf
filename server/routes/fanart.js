@@ -406,7 +406,7 @@ async function discoverRedditTargets(req, series) {
       .filter(name => isSeriesSpecificSubreddit(name, subredditSignals))
       .slice(0, 12);
     const subreddits = strictMatches.length ? strictMatches : candidates;
-    const queries = dedupeQueryStrings(data?.queries).slice(0, 10);
+    const queries = sanitizeRedditSearchSeedQueries(data?.queries).slice(0, 10);
     if (!subreddits.length || !queries.length) return fallback;
     return { source: 'claude', subreddits, queries };
   } catch {
@@ -467,6 +467,11 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         const title = String(post?.title || '').trim();
         if (title && flairSamples.get(flair).length < 3) flairSamples.get(flair).push(title);
       }
+    }
+    if (!stats.flair_discovery_scanned && isRedditAccessBlocked(lastError)) {
+      stats.discovered_flairs = sortFlairsByCount(flairCounts);
+      stats.flair_counts = mapFlairCounts(flairCounts);
+      return { items: out, stats, error: lastError };
     }
 
     const pickedFlair = await pickBestRedditFlairForSeries({
@@ -837,6 +842,22 @@ function dedupeQueryStrings(values) {
   return out;
 }
 
+function sanitizeRedditSearchSeedQueries(values) {
+  const out = [];
+  for (const value of values || []) {
+    const cleaned = String(value || '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) continue;
+    const lower = cleaned.toLowerCase();
+    // Flair queries are constructed separately from discovered flair names.
+    if (/(^|\s)flair(_name)?:/.test(lower)) continue;
+    out.push(cleaned);
+  }
+  return dedupeQueryStrings(out);
+}
+
 function buildSeriesSpecificFallbackSubreddits(series) {
   const tokens = tokenizeSeriesTerms(series);
   const aliases = buildKnownFranchiseAliases(series);
@@ -901,11 +922,12 @@ function buildRedditSearchQueries(baseQueries) {
   for (const query of baseQueries || []) {
     const cleaned = String(query || '').trim();
     if (!cleaned) continue;
+    const lower = cleaned.toLowerCase();
+    if (/(^|\s)flair(_name)?:/.test(lower)) continue;
     out.push(cleaned);
-    out.push(`${cleaned} fan art`);
-    out.push(`${cleaned} fanart`);
-    out.push(`${cleaned} flair_name:\"Fan Art\"`);
-    out.push(`${cleaned} flair_name:art`);
+    if (!/\bfan\s*art\b/.test(lower)) out.push(`${cleaned} fan art`);
+    if (!/\bfanart\b/.test(lower)) out.push(`${cleaned} fanart`);
+    if (!/\billustration\b/.test(lower)) out.push(`${cleaned} illustration`);
   }
   return dedupeQueryStrings(out).slice(0, 12);
 }
@@ -1031,6 +1053,12 @@ function computeRetryDelayMs(retryAfterHeader, attempt) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, Math.max(1, Number(ms) || 1)));
+}
+
+function isRedditAccessBlocked(errorMessage) {
+  const raw = String(errorMessage || '').toLowerCase();
+  if (!raw) return false;
+  return raw.includes('http_403') || raw.includes(':403');
 }
 
 async function fetchWithTimeout(url, init, timeoutMs) {
