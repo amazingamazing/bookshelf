@@ -419,6 +419,7 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
 
   const out = [];
   const seenUrls = new Set();
+  const seenPostUrls = new Set();
   const pickedQueries = buildRedditSearchQueries((Array.isArray(queries) ? queries : []).slice(0, 4));
   const discoveredFlairs = new Set();
   const flairCounts = new Map();
@@ -474,7 +475,8 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     const pickedFlairName = String(pickedFlair?.selectedFlair || '').trim();
     const flairQuerySeed = pickedFlairName ? [pickedFlairName] : Array.from(discoveredFlairs);
     const flairQueries = buildFlairFocusedQueries(flairQuerySeed);
-    const queryCandidates = dedupeQueryStrings([...flairQueries, ...pickedQueries]).slice(0, 16);
+    const filteredPickedQueries = filterQueriesForSelectedFlair(pickedQueries, pickedFlairName);
+    const queryCandidates = dedupeQueryStrings([...flairQueries, ...filteredPickedQueries]).slice(0, 16);
 
     for (const query of queryCandidates) {
       const path = `/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=year&limit=100&raw_json=1`;
@@ -491,11 +493,13 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
       pushImagesFromPosts(listing.posts, {
         output: out,
         seenUrls,
+        seenPostUrls,
         perSubredditLimit,
         subreddit: safeSubreddit,
         queryUsed: query,
         allowMature,
         preferredFlair: pickedFlairName,
+        maxImagesPerPost: 1,
         stats
       });
       if (out.length >= perSubredditLimit) {
@@ -644,11 +648,13 @@ function parseJsonPayloadLoose(value) {
 function pushImagesFromPosts(posts, options) {
   const output = options?.output || [];
   const seenUrls = options?.seenUrls || new Set();
+  const seenPostUrls = options?.seenPostUrls || new Set();
   const perSubredditLimit = Math.max(1, Number(options?.perSubredditLimit) || 5);
   const subreddit = String(options?.subreddit || '');
   const queryUsed = String(options?.queryUsed || '');
   const allowMature = Boolean(options?.allowMature);
   const preferredFlair = String(options?.preferredFlair || '').trim().toLowerCase();
+  const maxImagesPerPost = Math.max(1, Number(options?.maxImagesPerPost) || 1);
   const stats = options?.stats;
 
   for (const post of posts || []) {
@@ -660,17 +666,21 @@ function pushImagesFromPosts(posts, options) {
       if (stats) stats.rejected_non_art += 1;
       continue;
     }
+    const postUrl = buildRedditPostUrl(post);
+    if (postUrl && seenPostUrls.has(postUrl)) continue;
     const imageCandidates = extractImageUrlsFromRedditPost(post);
     if (!imageCandidates.length) continue;
-    if (stats) stats.kept_posts += 1;
+    let pushedForPost = 0;
     for (const imageUrl of imageCandidates) {
       if (output.length >= perSubredditLimit) break;
+      if (pushedForPost >= maxImagesPerPost) break;
       if (!imageUrl || seenUrls.has(imageUrl)) continue;
       seenUrls.add(imageUrl);
+      pushedForPost += 1;
       output.push({
         source: 'reddit',
         image_url: imageUrl,
-        post_url: buildRedditPostUrl(post),
+        post_url: postUrl,
         title: String(post?.title || '').trim() || null,
         subreddit,
         author: String(post?.author || '').trim() || null,
@@ -680,6 +690,10 @@ function pushImagesFromPosts(posts, options) {
         flair_text: String(post?.link_flair_text || '').trim() || null,
         art_signal: artSignal.reason
       });
+    }
+    if (pushedForPost > 0) {
+      if (postUrl) seenPostUrls.add(postUrl);
+      if (stats) stats.kept_posts += 1;
     }
   }
 }
@@ -854,15 +868,39 @@ function buildFlairFocusedQueries(flairs) {
     .filter(v => /\bart\b|fan[\s-]?art|illustration|drawing|sketch/i.test(v))
     .slice(0, 8);
   for (const flair of artFlairs) {
-    out.push(`flair_name:\"${flair}\"`);
     out.push(`flair:\"${flair}\"`);
+    out.push(`flair_name:\"${flair}\"`);
   }
   if (!out.length) {
+    out.push('flair:\"Art\"');
     out.push('flair_name:\"Art\"');
+    out.push('flair:\"Fan Art\"');
     out.push('flair_name:\"Fan Art\"');
+    out.push('flair:\"Fanart\"');
     out.push('flair_name:\"Fanart\"');
   }
   return dedupeQueryStrings(out).slice(0, 12);
+}
+
+function filterQueriesForSelectedFlair(queries, selectedFlair) {
+  const selected = String(selectedFlair || '').trim().toLowerCase();
+  if (!selected) return dedupeQueryStrings(queries);
+  const out = [];
+  for (const rawQuery of (Array.isArray(queries) ? queries : [])) {
+    const normalized = String(rawQuery || '').trim();
+    if (!normalized) continue;
+    const lower = normalized.toLowerCase();
+    const isFlairQuery = /(^|\s)flair(_name)?:/.test(lower);
+    if (!isFlairQuery) {
+      out.push(normalized);
+      continue;
+    }
+    const mentionsSelected = lower.includes(selected);
+    const mentionsFanArtAlias = /fan\s*art|fanart/.test(lower);
+    if (mentionsFanArtAlias && !mentionsSelected) continue;
+    out.push(normalized);
+  }
+  return dedupeQueryStrings(out);
 }
 
 function tokenizeSeriesTerms(series) {

@@ -19,6 +19,8 @@
 - Reddit retrieval now discovers subreddit flair names from `hot/new` posts and uses flair-focused queries (e.g. `flair_name:\"Art\"`) for art targeting
 - Reddit items now include flair/art-signal metadata; debug payload now includes request-attempt traces, discovered flairs, and non-art rejection counts
 - Reddit fan-art collection now treats `top_year`/`hot_now` as flair-discovery-only; returned items come from the follow-up flair/query search stage
+- Reddit fan-art retrieval now favors result diversity by limiting to one image per Reddit post URL and continuing query passes to fill per-subreddit results
+- Reddit query candidate builder now drops conflicting `Fan Art/Fanart` flair queries once a concrete subreddit flair (e.g. `Art`) is selected
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -50,6 +52,7 @@
 - [x] Reddit fan art now uses direct URL fetches + top-year flair discovery with LLM flair selection
 - [ ] Wandering Inn-specific tuning pass still pending with fresh post-fix debug payload (validate exact subreddit/flair names)
 - [x] Wandering Inn reddit fan-art early-return mismatch fixed by disabling early-path item output and always running flair-selection/search stage
+- [x] Wandering Inn reddit results no longer saturate from a single gallery post (one image per post + post-url dedupe)
 - [ ] Migrate Reddit fan art from public JSON prototype to official OAuth API integration
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript
