@@ -377,7 +377,7 @@ async function loadSeriesContext(seriesId) {
 }
 
 async function discoverRedditTargets(req, series) {
-  const seriesTokens = tokenizeSeriesTerms(series);
+  const subredditSignals = buildSubredditSignals(series);
   const fallback = {
     source: 'fallback',
     subreddits: buildSeriesSpecificFallbackSubreddits(series),
@@ -398,10 +398,13 @@ async function discoverRedditTargets(req, series) {
     const blockedGeneric = new Set([
       'fanart', 'digitalart', 'characterdrawing', 'imaginarynetwork', 'fantasy', 'books', 'art', 'drawing', 'illustration'
     ]);
-    const subreddits = dedupeLowerStrings(data?.subreddits)
+    const candidates = dedupeLowerStrings(data?.subreddits)
       .filter(name => !blockedGeneric.has(name))
-      .filter(name => isSeriesSpecificSubreddit(name, seriesTokens))
       .slice(0, 12);
+    const strictMatches = candidates
+      .filter(name => isSeriesSpecificSubreddit(name, subredditSignals))
+      .slice(0, 12);
+    const subreddits = strictMatches.length ? strictMatches : candidates;
     const queries = dedupeQueryStrings(data?.queries).slice(0, 10);
     if (!subreddits.length || !queries.length) return fallback;
     return { source: 'claude', subreddits, queries };
@@ -801,7 +804,12 @@ function dedupeQueryStrings(values) {
 
 function buildSeriesSpecificFallbackSubreddits(series) {
   const tokens = tokenizeSeriesTerms(series);
+  const aliases = buildKnownFranchiseAliases(series);
   const out = [];
+  for (const alias of aliases) {
+    const compactAlias = alias.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    if (compactAlias) out.push(compactAlias);
+  }
   for (const token of tokens) {
     out.push(token);
     out.push(`${token}series`);
@@ -832,11 +840,18 @@ function buildFallbackQueries(series) {
   const seriesName = String(series?.series_name || '').trim();
   const authorName = String(series?.author_name || '').trim();
   const firstBookTitle = String(series?.first_book_title || '').trim();
+  const knownAliases = buildKnownFranchiseAliases(series);
   const out = [];
   if (seriesName) out.push(seriesName);
   if (seriesName && authorName) out.push(`${seriesName} ${authorName}`);
   if (firstBookTitle) out.push(firstBookTitle);
   if (firstBookTitle && seriesName) out.push(`${firstBookTitle} ${seriesName}`);
+  for (const alias of knownAliases) {
+    out.push(alias);
+    out.push(`${alias} fan art`);
+    out.push(`${alias} fanart`);
+    out.push(`${alias} illustration`);
+  }
   if (seriesName) {
     out.push(`${seriesName} fan art`);
     out.push(`${seriesName} fanart`);
@@ -905,8 +920,12 @@ function filterQueriesForSelectedFlair(queries, selectedFlair) {
 
 function tokenizeSeriesTerms(series) {
   const raw = String(series?.series_name || '').toLowerCase();
+  const firstBook = String(series?.first_book_title || '').toLowerCase();
   const out = [];
   for (const token of raw.split(/[^a-z0-9]+/g)) {
+    if (token.length >= 3) out.push(token);
+  }
+  for (const token of firstBook.split(/[^a-z0-9]+/g)) {
     if (token.length >= 3) out.push(token);
   }
   const collapsed = raw.replace(/[^a-z0-9]/g, '');
@@ -914,13 +933,49 @@ function tokenizeSeriesTerms(series) {
   return Array.from(new Set(out));
 }
 
-function isSeriesSpecificSubreddit(subreddit, tokens) {
+function isSeriesSpecificSubreddit(subreddit, signals) {
   const normalized = String(subreddit || '').toLowerCase();
   if (!normalized) return false;
-  for (const token of (tokens || [])) {
+  const tokens = signals?.tokens || [];
+  const aliases = signals?.aliases || [];
+  for (const token of tokens) {
     if (normalized.includes(token)) return true;
   }
+  for (const alias of aliases) {
+    if (normalized === alias || normalized.includes(alias)) return true;
+  }
   return false;
+}
+
+function buildSubredditSignals(series) {
+  const tokens = tokenizeSeriesTerms(series);
+  const aliases = buildKnownFranchiseAliases(series)
+    .map(v => String(v || '').toLowerCase().replace(/[^a-z0-9_]/g, ''))
+    .filter(Boolean);
+  return { tokens, aliases };
+}
+
+function buildKnownFranchiseAliases(series) {
+  const seriesName = String(series?.series_name || '').toLowerCase();
+  const firstBookTitle = String(series?.first_book_title || '').toLowerCase();
+  const aliases = new Set();
+  if (/song\s+of\s+ice\s+and\s+fire|a\s+song\s+of\s+ice\s+and\s+fire|asoiaf|westeros/.test(seriesName)) {
+    aliases.add('asoiaf');
+    aliases.add('game of thrones');
+    aliases.add('westeros');
+    aliases.add('house of the dragon');
+    aliases.add('gameofthrones');
+    aliases.add('houseofthedragon');
+    aliases.add('pureasoiaf');
+    aliases.add('freefolk');
+    aliases.add('naath');
+    aliases.add('iceandfire');
+  }
+  if (/game\s+of\s+thrones/.test(firstBookTitle)) {
+    aliases.add('game of thrones');
+    aliases.add('gameofthrones');
+  }
+  return Array.from(aliases);
 }
 
 async function fetchWithTimeout(url, init, timeoutMs) {
