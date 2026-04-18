@@ -175,6 +175,7 @@ async function discoverRedditTargetsViaClaude(context) {
     'queries must be short phrase queries for Reddit search, no punctuation-heavy strings.',
     'Only include subreddits that are directly specific to this series/franchise/community.',
     'Do NOT include generic art, fantasy, books, writing, or broad genre subreddits.',
+    'Avoid broad genre communities (for example gamelit/litrpg/progressionfantasy) unless no better series/franchise-specific subreddit exists.',
     'Prefer official/community-specific subreddits and obvious close variants (for example audiobook-focused variants).',
     'If direct series-name subreddits are weak or sparse, include clearly relevant franchise aliases/adaptation communities (for example ASOIAF/Game of Thrones style variants) rather than generic subreddits.',
     'Include art-oriented query variants and flair-oriented queries (fan art, fanart, illustration, flair_name:"Fan Art").',
@@ -211,6 +212,7 @@ function sanitizeRedditDiscovery(aiResult, context) {
     'books',
     'litrpg',
     'progressionfantasy',
+    'gamelit',
     'art',
     'drawing',
     'illustration'

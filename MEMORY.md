@@ -22,6 +22,7 @@
 - Reddit fan-art retrieval now favors result diversity by limiting to one image per Reddit post URL and continuing query passes to fill per-subreddit results
 - Reddit query candidate builder now drops conflicting `Fan Art/Fanart` flair queries once a concrete subreddit flair (e.g. `Art`) is selected
 - Reddit subreddit discovery now supports franchise aliases (e.g., ASOIAF/Game of Thrones variants) and soft-fallbacks to non-generic Claude candidates when strict token matching is too narrow
+- Reddit collector now retries/backs off on 429s and continues pass/query processing instead of aborting subreddit collection on first listing failure
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -55,6 +56,7 @@
 - [x] Wandering Inn reddit fan-art early-return mismatch fixed by disabling early-path item output and always running flair-selection/search stage
 - [x] Wandering Inn reddit results no longer saturate from a single gallery post (one image per post + post-url dedupe)
 - [x] ASOIAF/Game of Thrones subreddit discovery improved by adding alias-aware matching and less brittle strict-filter fallback behavior
+- [x] DCC Reddit tuning: block generic `gamelit`, preserve series-specific subreddit preference, and continue processing under 429s with retry/backoff traces
 - [ ] Migrate Reddit fan art from public JSON prototype to official OAuth API integration
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript

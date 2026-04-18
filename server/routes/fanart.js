@@ -396,7 +396,8 @@ async function discoverRedditTargets(req, series) {
     if (!response.ok) return fallback;
     const data = await response.json();
     const blockedGeneric = new Set([
-      'fanart', 'digitalart', 'characterdrawing', 'imaginarynetwork', 'fantasy', 'books', 'art', 'drawing', 'illustration'
+      'fanart', 'digitalart', 'characterdrawing', 'imaginarynetwork', 'fantasy', 'books', 'art', 'drawing', 'illustration',
+      'litrpg', 'progressionfantasy', 'gamelit'
     ]);
     const candidates = dedupeLowerStrings(data?.subreddits)
       .filter(name => !blockedGeneric.has(name))
@@ -439,6 +440,7 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     selected_flair_confidence: null,
     request_attempts: []
   };
+  let lastError = null;
   try {
     const discoveryPasses = [
       { stage: 'top_year', path: `/r/${safeSubreddit}/top.json?t=year&limit=100&raw_json=1` },
@@ -450,6 +452,10 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
       const listing = await fetchRedditListingByPath(path);
       if (Array.isArray(listing.trace) && listing.trace.length) {
         stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: pass.stage })));
+      }
+      if (listing.error) {
+        lastError = listing.error;
+        continue;
       }
       for (const post of listing.posts) {
         stats.flair_discovery_scanned += 1;
@@ -487,6 +493,10 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
       if (Array.isArray(listing.trace) && listing.trace.length) {
         stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: 'search', query })));
       }
+      if (listing.error) {
+        lastError = listing.error;
+        continue;
+      }
       for (const post of listing.posts) {
         const flair = String(post?.link_flair_text || '').trim();
         if (!flair) continue;
@@ -514,6 +524,7 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
 
     stats.discovered_flairs = sortFlairsByCount(flairCounts);
     stats.flair_counts = mapFlairCounts(flairCounts);
+    if (!out.length && lastError) return { items: out, stats, error: lastError };
     return { items: out, stats };
   } catch (err) {
     stats.discovered_flairs = sortFlairsByCount(flairCounts);
@@ -525,27 +536,51 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
 async function fetchRedditListingByPath(path) {
   const hosts = ['https://www.reddit.com', 'https://old.reddit.com', 'https://api.reddit.com'];
   const trace = [];
+  let lastError = null;
   for (const host of hosts) {
-    const url = `${host}${path}`;
-    try {
-      const response = await fetchWithTimeout(url, {
-        headers: {
-          'User-Agent': 'bookshelf-fanart-prototype/1.0 (contact: local-dev)',
-          'Accept': 'application/json',
-          'Accept-Language': 'en-US,en;q=0.9'
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const url = `${host}${path}`;
+      try {
+        const response = await fetchWithTimeout(url, {
+          headers: {
+            'User-Agent': 'bookshelf-fanart-prototype/1.0 (contact: local-dev)',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9'
+          }
+        }, 10000);
+        trace.push({ host, status: response.status, attempt });
+        if (response.status === 429 && attempt < 3) {
+          const waitMs = computeRetryDelayMs(response.headers.get('retry-after'), attempt);
+          trace.push({ host, status: 'retrying_429', attempt, wait_ms: waitMs });
+          await sleep(waitMs);
+          continue;
         }
-      }, 10000);
-      trace.push({ host, status: response.status });
-      if (!response.ok) continue;
-      const data = await response.json();
-      const posts = (data?.data?.children || []).map(item => item?.data).filter(Boolean);
-      return { posts, trace };
-    } catch (err) {
-      trace.push({ host, status: 'error', error: err?.message || 'request_failed' });
+        if (!response.ok) {
+          lastError = `http_${response.status}`;
+          break;
+        }
+        const data = await response.json();
+        const posts = (data?.data?.children || []).map(item => item?.data).filter(Boolean);
+        return { posts, trace, error: null };
+      } catch (err) {
+        const message = err?.message || 'request_failed';
+        trace.push({ host, status: 'error', error: message, attempt });
+        lastError = message;
+        if (attempt < 3) {
+          const waitMs = computeRetryDelayMs(null, attempt);
+          trace.push({ host, status: 'retrying_error', attempt, wait_ms: waitMs });
+          await sleep(waitMs);
+          continue;
+        }
+      }
     }
   }
   const statusSummary = trace.map(t => `${t.host}:${t.status}`).join(',');
-  throw new Error(`reddit_all_hosts_failed:${statusSummary}`);
+  return {
+    posts: [],
+    trace,
+    error: `reddit_all_hosts_failed:${statusSummary}${lastError ? `:${lastError}` : ''}`
+  };
 }
 
 function mapFlairCounts(flairCounts) {
@@ -893,6 +928,14 @@ function buildFlairFocusedQueries(flairs) {
     out.push('flair_name:\"Fan Art\"');
     out.push('flair:\"Fanart\"');
     out.push('flair_name:\"Fanart\"');
+    out.push('flair:\"Fan Art No Spoilers\"');
+    out.push('flair_name:\"Fan Art No Spoilers\"');
+    out.push('flair:\"Fan Art Book 1\"');
+    out.push('flair_name:\"Fan Art Book 1\"');
+    out.push('flair:\"Fan Art Book 2\"');
+    out.push('flair_name:\"Fan Art Book 2\"');
+    out.push('flair:\"Fan Art Book 3\"');
+    out.push('flair_name:\"Fan Art Book 3\"');
   }
   return dedupeQueryStrings(out).slice(0, 12);
 }
@@ -976,6 +1019,18 @@ function buildKnownFranchiseAliases(series) {
     aliases.add('gameofthrones');
   }
   return Array.from(aliases);
+}
+
+function computeRetryDelayMs(retryAfterHeader, attempt) {
+  const retryAfterSeconds = Number(retryAfterHeader);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.max(300, Math.min(5000, Math.floor(retryAfterSeconds * 1000)));
+  }
+  return Math.max(300, Math.min(2500, attempt * 700));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(1, Number(ms) || 1)));
 }
 
 async function fetchWithTimeout(url, init, timeoutMs) {
