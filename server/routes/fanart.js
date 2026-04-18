@@ -1,13 +1,16 @@
 const router = require('express').Router();
 const fetch = require('node-fetch');
+const Anthropic = require('@anthropic-ai/sdk');
 const { pool } = require('../db');
 
 const DEVIANTART_CLIENT_ID = process.env.DEVIANTART_CLIENT_ID || null;
 const DEVIANTART_CLIENT_SECRET = process.env.DEVIANTART_CLIENT_SECRET || null;
 const DEVIANTART_TOKEN_URL = 'https://www.deviantart.com/oauth2/token';
 const DEVIANTART_API_BASE = 'https://www.deviantart.com/api/v1/oauth2';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
 let tokenCache = { accessToken: null, expiresAtMs: 0 };
+const aiClient = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
 
 router.get('/deviantart', async (req, res) => {
   try {
@@ -290,13 +293,13 @@ router.get('/reddit', async (req, res) => {
         queries,
         debug: {
           discovery_source: discovery.source || 'fallback',
+          api_mode: 'direct_urls',
           subreddit_errors: [],
           subreddit_counts: {}
         },
         items: []
       });
     }
-
     const items = [];
     const seenUrls = new Set();
     const subredditErrors = [];
@@ -305,7 +308,8 @@ router.get('/reddit', async (req, res) => {
     for (const subreddit of subreddits) {
       const result = await collectRedditImagesForSubreddit(subreddit, queries, {
         perSubredditLimit,
-        allowMature
+        allowMature,
+        series
       });
       subredditCounts[subreddit] = result.items.length;
       subredditStats[subreddit] = result.stats || null;
@@ -329,6 +333,7 @@ router.get('/reddit', async (req, res) => {
       discovery_source: discovery.source || 'fallback',
       debug: {
         discovery_source: discovery.source || 'fallback',
+        api_mode: 'direct_urls',
         subreddit_errors: subredditErrors,
         subreddit_counts: subredditCounts,
         subreddit_stats: subredditStats
@@ -408,6 +413,7 @@ async function discoverRedditTargets(req, series) {
 async function collectRedditImagesForSubreddit(subreddit, queries, options) {
   const perSubredditLimit = Math.max(1, Number(options?.perSubredditLimit) || 5);
   const allowMature = Boolean(options?.allowMature);
+  const series = options?.series || null;
   const safeSubreddit = String(subreddit || '').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
   if (!safeSubreddit) return { items: [], error: 'invalid_subreddit' };
 
@@ -415,52 +421,86 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
   const seenUrls = new Set();
   const pickedQueries = buildRedditSearchQueries((Array.isArray(queries) ? queries : []).slice(0, 4));
   const discoveredFlairs = new Set();
+  const flairCounts = new Map();
+  const flairSamples = new Map();
   const stats = {
     scanned_posts: 0,
     rejected_non_art: 0,
     kept_posts: 0,
+    flair_discovery_scanned: 0,
+    flair_counts: {},
     discovered_flairs: [],
+    selected_flair: null,
+    selected_flair_reason: null,
+    selected_flair_confidence: null,
     request_attempts: []
   };
   try {
-    // Pull current subreddit traffic first so we can discover actual flair names (e.g. "Art")
-    for (const mode of ['hot', 'new']) {
-      const path = `/r/${safeSubreddit}/${mode}.json?limit=35&raw_json=1`;
+    const discoveryPasses = [
+      { stage: 'top_year', path: `/r/${safeSubreddit}/top.json?t=year&limit=100&raw_json=1` },
+      { stage: 'hot_now', path: `/r/${safeSubreddit}/hot.json?limit=100&raw_json=1` }
+    ];
+
+    for (const pass of discoveryPasses) {
+      const path = pass.path;
       const listing = await fetchRedditListingByPath(path);
       if (Array.isArray(listing.trace) && listing.trace.length) {
-        stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: mode })));
+        stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: pass.stage })));
       }
       for (const post of listing.posts) {
+        stats.flair_discovery_scanned += 1;
         const flair = String(post?.link_flair_text || '').trim();
-        if (flair) discoveredFlairs.add(flair);
+        if (!flair) continue;
+        discoveredFlairs.add(flair);
+        flairCounts.set(flair, (flairCounts.get(flair) || 0) + 1);
+        if (!flairSamples.has(flair)) flairSamples.set(flair, []);
+        const title = String(post?.title || '').trim();
+        if (title && flairSamples.get(flair).length < 3) flairSamples.get(flair).push(title);
       }
       pushImagesFromPosts(listing.posts, {
         output: out,
         seenUrls,
         perSubredditLimit,
         subreddit: safeSubreddit,
-        queryUsed: mode,
+        queryUsed: pass.stage,
         allowMature,
         stats
       });
       if (out.length >= perSubredditLimit) {
-        stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+        stats.discovered_flairs = sortFlairsByCount(flairCounts);
+        stats.flair_counts = mapFlairCounts(flairCounts);
         return { items: out, stats };
       }
     }
 
-    const flairQueries = buildFlairFocusedQueries(Array.from(discoveredFlairs));
-    const queryCandidates = dedupeQueryStrings([...flairQueries, ...pickedQueries]).slice(0, 14);
+    const pickedFlair = await pickBestRedditFlairForSeries({
+      series,
+      subreddit: safeSubreddit,
+      flairCounts,
+      flairSamples
+    });
+    if (pickedFlair?.selectedFlair) {
+      stats.selected_flair = pickedFlair.selectedFlair;
+      stats.selected_flair_reason = pickedFlair.reason || null;
+      stats.selected_flair_confidence = pickedFlair.confidence || null;
+    }
+
+    const pickedFlairName = String(pickedFlair?.selectedFlair || '').trim();
+    const flairQuerySeed = pickedFlairName ? [pickedFlairName] : Array.from(discoveredFlairs);
+    const flairQueries = buildFlairFocusedQueries(flairQuerySeed);
+    const queryCandidates = dedupeQueryStrings([...flairQueries, ...pickedQueries]).slice(0, 16);
 
     for (const query of queryCandidates) {
-      const path = `/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=all&limit=35&raw_json=1`;
+      const path = `/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=year&limit=100&raw_json=1`;
       const listing = await fetchRedditListingByPath(path);
       if (Array.isArray(listing.trace) && listing.trace.length) {
         stats.request_attempts.push(...listing.trace.map(t => ({ ...t, stage: 'search', query })));
       }
       for (const post of listing.posts) {
         const flair = String(post?.link_flair_text || '').trim();
-        if (flair) discoveredFlairs.add(flair);
+        if (!flair) continue;
+        discoveredFlairs.add(flair);
+        flairCounts.set(flair, (flairCounts.get(flair) || 0) + 1);
       }
       pushImagesFromPosts(listing.posts, {
         output: out,
@@ -469,18 +509,22 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         subreddit: safeSubreddit,
         queryUsed: query,
         allowMature,
+        preferredFlair: pickedFlairName,
         stats
       });
       if (out.length >= perSubredditLimit) {
-        stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+        stats.discovered_flairs = sortFlairsByCount(flairCounts);
+        stats.flair_counts = mapFlairCounts(flairCounts);
         return { items: out, stats };
       }
     }
 
-    stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+    stats.discovered_flairs = sortFlairsByCount(flairCounts);
+    stats.flair_counts = mapFlairCounts(flairCounts);
     return { items: out, stats };
   } catch (err) {
-    stats.discovered_flairs = Array.from(discoveredFlairs).slice(0, 30);
+    stats.discovered_flairs = sortFlairsByCount(flairCounts);
+    stats.flair_counts = mapFlairCounts(flairCounts);
     return { items: out, error: err?.message || 'fetch_failed', stats };
   }
 }
@@ -511,6 +555,106 @@ async function fetchRedditListingByPath(path) {
   throw new Error(`reddit_all_hosts_failed:${statusSummary}`);
 }
 
+function mapFlairCounts(flairCounts) {
+  const out = {};
+  const pairs = [...(flairCounts || new Map()).entries()].sort((a, b) => b[1] - a[1]);
+  for (const [name, count] of pairs) out[name] = count;
+  return out;
+}
+
+function sortFlairsByCount(flairCounts) {
+  return [...(flairCounts || new Map()).entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name)
+    .slice(0, 30);
+}
+
+async function pickBestRedditFlairForSeries({ series, subreddit, flairCounts, flairSamples }) {
+  const candidates = [...(flairCounts || new Map()).entries()]
+    .filter(([name]) => String(name || '').trim())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 20)
+    .map(([name, count]) => ({
+      name: String(name || '').trim(),
+      count,
+      sample_titles: (flairSamples?.get(name) || []).slice(0, 3)
+    }));
+  if (!candidates.length) return { selectedFlair: null, confidence: 'none', reason: 'no_flairs_discovered' };
+
+  const heuristic = pickBestFlairHeuristic(candidates);
+  if (!aiClient) {
+    return {
+      selectedFlair: heuristic?.name || null,
+      confidence: heuristic ? 'medium' : 'low',
+      reason: heuristic ? 'heuristic_art_keyword_match' : 'heuristic_no_match'
+    };
+  }
+
+  try {
+    const seriesName = String(series?.series_name || '').trim() || 'unknown series';
+    const authorName = String(series?.author_name || '').trim();
+    const prompt = [
+      'Choose the single best Reddit flair that most likely represents fan art/image posts.',
+      `Series: ${seriesName}`,
+      authorName ? `Author: ${authorName}` : null,
+      `Subreddit: r/${subreddit}`,
+      'Flair candidates with counts and sample titles:',
+      JSON.stringify(candidates, null, 2),
+      'Return ONLY JSON with keys: selected_flair, confidence, reason.',
+      'Rules:',
+      '- selected_flair must exactly match one candidate name, or null if no art-like flair exists.',
+      '- Prefer fan art, art, illustration, sketch, drawing, concept-art style labels.',
+      '- Reject question/discussion/news/recommendation flairs.'
+    ].filter(Boolean).join('\n');
+    const message = await aiClient.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 280,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    const lastContent = message.content[message.content.length - 1];
+    const text = lastContent?.type === 'text' ? lastContent.text : '';
+    const parsed = parseJsonPayloadLoose(text);
+    const chosen = String(parsed?.selected_flair || '').trim();
+    const candidateNames = new Set(candidates.map(c => c.name));
+    if (chosen && candidateNames.has(chosen)) {
+      return {
+        selectedFlair: chosen,
+        confidence: String(parsed?.confidence || 'medium').trim() || 'medium',
+        reason: String(parsed?.reason || 'llm_selected').trim() || 'llm_selected'
+      };
+    }
+  } catch {
+    // Fall through to heuristic.
+  }
+
+  return {
+    selectedFlair: heuristic?.name || null,
+    confidence: heuristic ? 'medium' : 'low',
+    reason: heuristic ? 'heuristic_after_llm_fallback' : 'no_art_like_flair'
+  };
+}
+
+function pickBestFlairHeuristic(candidates) {
+  const artRegex = /\bfan[\s-]?art\b|\bart\b|illustration|drawing|sketch|concept/i;
+  for (const candidate of candidates || []) {
+    if (artRegex.test(String(candidate?.name || ''))) return candidate;
+  }
+  return null;
+}
+
+function parseJsonPayloadLoose(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return {};
+  const stripped = raw.replace(/```json\s*/gi, '').replace(/```/g, '').trim();
+  const firstBrace = stripped.indexOf('{');
+  const lastBrace = stripped.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    const candidate = stripped.slice(firstBrace, lastBrace + 1);
+    return JSON.parse(candidate);
+  }
+  return JSON.parse(stripped);
+}
+
 function pushImagesFromPosts(posts, options) {
   const output = options?.output || [];
   const seenUrls = options?.seenUrls || new Set();
@@ -518,13 +662,14 @@ function pushImagesFromPosts(posts, options) {
   const subreddit = String(options?.subreddit || '');
   const queryUsed = String(options?.queryUsed || '');
   const allowMature = Boolean(options?.allowMature);
+  const preferredFlair = String(options?.preferredFlair || '').trim().toLowerCase();
   const stats = options?.stats;
 
   for (const post of posts || []) {
     if (stats) stats.scanned_posts += 1;
     if (output.length >= perSubredditLimit) break;
     if (!allowMature && Boolean(post?.over_18)) continue;
-    const artSignal = detectArtSignal(post, queryUsed);
+    const artSignal = detectArtSignal(post, queryUsed, preferredFlair);
     if (!artSignal.ok) {
       if (stats) stats.rejected_non_art += 1;
       continue;
@@ -553,12 +698,17 @@ function pushImagesFromPosts(posts, options) {
   }
 }
 
-function detectArtSignal(post, queryUsed) {
+function detectArtSignal(post, queryUsed, preferredFlair) {
   const flair = String(post?.link_flair_text || '').toLowerCase();
   const title = String(post?.title || '').toLowerCase();
   const selftext = String(post?.selftext || '').toLowerCase();
   const query = String(queryUsed || '').toLowerCase();
+  const preferred = String(preferredFlair || '').toLowerCase();
   const hay = `${flair} ${title} ${selftext} ${query}`;
+  if (preferred && flair === preferred) return { ok: true, reason: 'preferred_flair_exact_match' };
+  if (query && /flair(_name)?:/.test(query) && flair && /\bart\b|fan[\s-]?art|illustration|drawing|sketch/i.test(flair)) {
+    return { ok: true, reason: 'query_flair_match' };
+  }
   if (/\bfan[\s-]?art\b/.test(hay)) return { ok: true, reason: 'fan_art' };
   if (/\billustration\b/.test(hay)) return { ok: true, reason: 'illustration' };
   if (/\bartwork\b/.test(hay)) return { ok: true, reason: 'artwork' };

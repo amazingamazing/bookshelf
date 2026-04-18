@@ -46,6 +46,7 @@
 - [ ] improve creator extraction consistency from DeviantArt links/metadata
 - [ ] Reddit fan art relevance/quality tuning (subreddit selection + query quality still early)
 - [ ] Reddit public JSON path still intermittently hits 403 on some subreddits; OAuth migration remains the durable fix
+- [x] Reddit fan art now uses direct URL fetches + top-year flair discovery with LLM flair selection
 - [ ] Wandering Inn-specific tuning pass still pending with fresh post-fix debug payload (validate exact subreddit/flair names)
 - [ ] Migrate Reddit fan art from public JSON prototype to official OAuth API integration
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
