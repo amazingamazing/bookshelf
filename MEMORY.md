@@ -14,6 +14,10 @@
 - Reddit fan art prototype added on series pages (section below DeviantArt) using public Reddit JSON listing endpoints
 - Claude-powered subreddit/query discovery endpoint added (`POST /api/ai/reddit-discover`) with sanitized output + fallback seeds
 - Reddit fan art endpoint added (`GET /api/fanart/reddit`) with per-subreddit caps, dedupe, partial-failure handling, and timeouts
+- Reddit fan art hardening: discovery now rejects generic subreddits and prefers series-specific communities only
+- Reddit fetcher now retries across `www.reddit.com`, `old.reddit.com`, and `api.reddit.com` with traceable per-host status (to mitigate 403 issues)
+- Reddit retrieval now discovers subreddit flair names from `hot/new` posts and uses flair-focused queries (e.g. `flair_name:\"Art\"`) for art targeting
+- Reddit items now include flair/art-signal metadata; debug payload now includes request-attempt traces, discovered flairs, and non-art rejection counts
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -41,6 +45,8 @@
 - [ ] Tune fan art-to-cover blend ratio and add optional user-facing "fan art intensity" control
 - [ ] improve creator extraction consistency from DeviantArt links/metadata
 - [ ] Reddit fan art relevance/quality tuning (subreddit selection + query quality still early)
+- [ ] Reddit public JSON path still intermittently hits 403 on some subreddits; OAuth migration remains the durable fix
+- [ ] Wandering Inn-specific tuning pass still pending with fresh post-fix debug payload (validate exact subreddit/flair names)
 - [ ] Migrate Reddit fan art from public JSON prototype to official OAuth API integration
 - [ ] add spoiler-aware fan art mode using read progress + next unread publication date
 - [ ] using js not typescript
@@ -76,6 +82,7 @@
 - Building curated ISBN-to-editions mapping over time (ISBNs are just numbers, safe to own)
 - Fan art sources: DeviantArt API (primary, official, attribution-ready), Bing Image Search (fallback)
 - Reddit source is currently public JSON prototype with no OAuth (good for exploration; needs OAuth hardening for production)
+- Reddit art targeting now prioritizes flair-aware filtering; if subreddit access fails (403), no flair discovery can occur and results stay empty
 - Commercial fan art use requires rethinking — current inline-linking model is most defensible
 
 ## Cover art sources (waterfall order)

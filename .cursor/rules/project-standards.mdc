@@ -1,3 +1,8 @@
+---
+description: Core project standards for My Bookshelf
+alwaysApply: true
+---
+
 This is a personal book tracking app called My Bookshelf.
 
 Stack:
