@@ -10,6 +10,7 @@
 - Edition browser (Open Library works/editions) with selectable alternate covers
 - Edition resolver now includes title fallback variants (full title, title-only, subtitle-stripped) to handle Open Library misses on long subtitle formats
 - Fan art on series pages (DeviantArt RSS + optional API metadata ranking)
+- Fan art source expansion: ArtStation integrated alongside DeviantArt with merged ranking, source attribution, and provider on/off toggles
 - Fan art controls: mature toggle, quality floor, sort mode, time window, AI exclusion, artist diversity cap
 - Reddit fan art prototype added on series pages (section below DeviantArt) using public Reddit JSON listing endpoints
 - Claude-powered subreddit/query discovery endpoint added (`POST /api/ai/reddit-discover`) with sanitized output + fallback seeds
@@ -25,6 +26,7 @@
 - Reddit collector now retries/backs off on 429s and continues pass/query processing instead of aborting subreddit collection on first listing failure
 - Reddit discovery/search seed queries now strip raw `flair:`/`flair_name:` strings; flair queries are generated only from discovered subreddit flair names
 - Reddit collector now short-circuits after discovery when subreddit access is fully blocked (403) to avoid noisy doomed query storms
+- ArtStation alias/query expansion now uses cached Claude-generated terms per series and reports expanded terms in fan-art debug payload
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -65,6 +67,7 @@
 - [ ] using inline styling not CSS files
 - [ ] reduce need for DB resets while iterating on imports/cover data
 - [ ] improve fan art source quality/ranking signals and result variety
+- [x] Add ArtStation as second fan-art source with merged pipeline + source toggles + per-source debug counts
 - [ ] optional follow-up: filter dead Open Library cover links from edition picker before display
 - [ ] evaluate perceptual-hash duplicate detection quality and choose a default distance threshold for Cinema feed dedupe
 

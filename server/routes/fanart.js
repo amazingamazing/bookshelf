@@ -7,10 +7,12 @@ const DEVIANTART_CLIENT_ID = process.env.DEVIANTART_CLIENT_ID || null;
 const DEVIANTART_CLIENT_SECRET = process.env.DEVIANTART_CLIENT_SECRET || null;
 const DEVIANTART_TOKEN_URL = 'https://www.deviantart.com/oauth2/token';
 const DEVIANTART_API_BASE = 'https://www.deviantart.com/api/v1/oauth2';
+const ARTSTATION_SEARCH_URL = 'https://www.artstation.com/api/v2/search/projects.json';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || null;
 
 let tokenCache = { accessToken: null, expiresAtMs: 0 };
 const aiClient = ANTHROPIC_API_KEY ? new Anthropic({ apiKey: ANTHROPIC_API_KEY }) : null;
+const artstationAliasCache = new Map();
 
 router.get('/deviantart', async (req, res) => {
   try {
@@ -27,10 +29,13 @@ router.get('/deviantart', async (req, res) => {
     const timeWindow = normalizeTimeWindow(req.query.time_window);
     const excludeAi = parseBoolean(req.query.exclude_ai, true);
     const perCreatorCap = Math.max(1, Math.min(5, Number(req.query.per_creator_cap) || 2));
+    const sourceDeviantart = parseBoolean(req.query.source_deviantart, true);
+    const sourceArtstation = parseBoolean(req.query.source_artstation, true);
 
     let searchText = (rawQuery || '').trim();
     const searchQueries = [];
     const relevanceHints = [];
+    let seriesContext = null;
     if (rawBookId) {
       const { rows } = await pool.query(`
         SELECT
@@ -44,6 +49,12 @@ router.get('/deviantart', async (req, res) => {
       `, [rawBookId]);
       if (!rows[0]) return res.status(404).json({ error: 'Book not found' });
       const b = rows[0];
+      seriesContext = {
+        id: null,
+        series_name: b.series_name || null,
+        author_name: b.author_name || null,
+        first_book_title: b.title || null
+      };
       const pieces = [b.title, b.series_name, b.author_name];
       searchText = pieces.filter(Boolean).join(' ');
       searchQueries.push(searchText);
@@ -82,6 +93,7 @@ router.get('/deviantart', async (req, res) => {
       `, [rawSeriesId]);
       if (!rows[0]) return res.status(404).json({ error: 'Series not found' });
       const s = rows[0];
+      seriesContext = s;
 
       const seriesQuery = [s.series_name, s.author_name].filter(Boolean).join(' ');
       searchQueries.push(seriesQuery);
@@ -127,8 +139,20 @@ router.get('/deviantart', async (req, res) => {
       .filter(v => v.length >= 4)));
     const relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
     const debug = {
+      sources_enabled: {
+        deviantart: sourceDeviantart,
+        artstation: sourceArtstation
+      },
       queries: dedupedQueries,
       anchor_phrases: anchorPhrases,
+      artstation_expanded_terms: [],
+      artstation_queries: [],
+      per_source_counts: {
+        merged_raw: { deviantart: 0, artstation: 0 },
+        relevance_kept: { deviantart: 0, artstation: 0 },
+        live_kept: { deviantart: 0, artstation: 0 },
+        final_kept: { deviantart: 0, artstation: 0 }
+      },
       stage_counts: {
         merged: 0,
         unique_links: 0,
@@ -141,10 +165,28 @@ router.get('/deviantart', async (req, res) => {
       }
     };
     const merged = [];
-    for (const query of dedupedQueries) {
-      const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
-      merged.push(...itemsForQuery.map(item => ({ ...item, query })));
-      if (merged.length >= limit * 12) break;
+    if (sourceDeviantart) {
+      for (const query of dedupedQueries) {
+        const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
+        debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
+        merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'deviantart' })));
+        if (merged.length >= limit * 18) break;
+      }
+    }
+    if (sourceArtstation) {
+      const expandedTerms = await getArtStationExpandedTerms({
+        series: seriesContext,
+        queries: dedupedQueries
+      });
+      debug.artstation_expanded_terms = expandedTerms;
+      const artstationQueries = buildArtStationSearchQueries(dedupedQueries, expandedTerms);
+      debug.artstation_queries = artstationQueries;
+      for (const query of artstationQueries) {
+        const itemsForQuery = await searchArtStationProjects(query, Math.max(20, limit * 3), { allowMature });
+        debug.per_source_counts.merged_raw.artstation += itemsForQuery.length;
+        merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'artstation' })));
+        if (merged.length >= limit * 18) break;
+      }
     }
     debug.stage_counts.merged = merged.length;
 
@@ -153,8 +195,9 @@ router.get('/deviantart', async (req, res) => {
     let relevanceRejected = 0;
     const relevanceExamples = [];
     for (const item of merged) {
-      if (seen.has(item.link)) continue;
-      seen.add(item.link);
+      const dedupeKey = buildFanartDedupeKey(item);
+      if (!dedupeKey || seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
       const relevance = evaluateRelevance(item, relevanceProfiles, anchorPhrases);
       if (!relevance.pass) {
         relevanceRejected++;
@@ -166,6 +209,8 @@ router.get('/deviantart', async (req, res) => {
         relevance_score: relevance.score
       };
       unique.push(scoredItem);
+      const sourceKey = item.source === 'artstation' ? 'artstation' : 'deviantart';
+      debug.per_source_counts.relevance_kept[sourceKey] += 1;
       if (relevanceExamples.length < 5) {
         relevanceExamples.push({
           title: item.title,
@@ -196,44 +241,49 @@ router.get('/deviantart', async (req, res) => {
         continue;
       }
       withLiveImages.push(item);
+      const sourceKey = item.source === 'artstation' ? 'artstation' : 'deviantart';
+      debug.per_source_counts.live_kept[sourceKey] += 1;
       if (withLiveImages.length >= targetCandidatePool) break;
     }
     debug.stage_counts.live_kept = withLiveImages.length;
     debug.stage_counts.quality_rejected = qualityRejected;
     debug.stage_counts.time_rejected = timeRejected;
 
-    const canEnrich = Boolean(DEVIANTART_CLIENT_ID && DEVIANTART_CLIENT_SECRET);
+    const canEnrich = Boolean(sourceDeviantart && DEVIANTART_CLIENT_ID && DEVIANTART_CLIENT_SECRET);
     let enriched = withLiveImages;
-    if (canEnrich && withLiveImages.length > 0) {
-      const metadataById = await fetchDeviationMetadata(withLiveImages.map(item => item.deviation_id).filter(Boolean), allowMature);
-      enriched = withLiveImages.map(item => {
-        const metadata = item.deviation_id ? metadataById.get(item.deviation_id) : null;
-        const stats = metadata?.stats || null;
-        const popularityScore = computePopularityScore(stats);
-        const qualityScore = computeQualityScore(item);
-        const relevanceScore = Number(item.relevance_score) || 0;
+    const deviantItems = withLiveImages.filter(item => item.source === 'deviantart');
+    const metadataById = canEnrich && deviantItems.length > 0
+      ? await fetchDeviationMetadata(deviantItems.map(item => item.deviation_id).filter(Boolean), allowMature)
+      : new Map();
+    enriched = withLiveImages.map(item => {
+      const relevanceScore = Number(item.relevance_score) || 0;
+      const qualityScore = computeQualityScore(item);
+      if (item.source === 'artstation') {
+        const popularityScore = computeArtStationPopularityScore(item.stats);
         const score = popularityScore + qualityScore + relevanceScore;
         return {
           ...item,
-          stats,
-          tags: normalizeTags(metadata?.tags || []),
+          tags: normalizeTags(item.tags || []),
           quality_score: Number(qualityScore.toFixed(3)),
           popularity_score: Number(popularityScore.toFixed(3)),
           score: Number(score.toFixed(3)),
-          metadata_enriched: Boolean(metadata)
-        };
-      });
-    } else {
-      enriched = withLiveImages
-        .map(item => ({
-          ...item,
-          tags: [],
-          quality_score: Number(computeQualityScore(item).toFixed(3)),
-          popularity_score: null,
-          score: Number((computeQualityScore(item) + (Number(item.relevance_score) || 0)).toFixed(3)),
           metadata_enriched: false
-        }));
-    }
+        };
+      }
+      const metadata = item.deviation_id ? metadataById.get(item.deviation_id) : null;
+      const stats = metadata?.stats || null;
+      const popularityScore = computePopularityScore(stats);
+      const score = popularityScore + qualityScore + relevanceScore;
+      return {
+        ...item,
+        stats,
+        tags: normalizeTags((metadata?.tags || item.tags || [])),
+        quality_score: Number(qualityScore.toFixed(3)),
+        popularity_score: Number(popularityScore.toFixed(3)),
+        score: Number(score.toFixed(3)),
+        metadata_enriched: Boolean(metadata)
+      };
+    });
 
     let filtered = enriched;
     if (excludeAi) {
@@ -244,9 +294,13 @@ router.get('/deviantart', async (req, res) => {
 
     const sorted = sortFanartItems(filtered, sortMode);
     const diversified = diversifyByCreator(sorted, limit, perCreatorCap);
+    for (const item of diversified) {
+      const sourceKey = item.source === 'artstation' ? 'artstation' : 'deviantart';
+      debug.per_source_counts.final_kept[sourceKey] += 1;
+    }
 
     res.json({
-      source: 'deviantart_rss',
+      source: 'fanart_multi',
       query: dedupedQueries.join(' || '),
       queries: dedupedQueries,
       allow_mature: allowMature,
@@ -256,8 +310,12 @@ router.get('/deviantart', async (req, res) => {
       exclude_ai: excludeAi,
       per_creator_cap: perCreatorCap,
       count: diversified.length,
+      sources_enabled: {
+        deviantart: sourceDeviantart,
+        artstation: sourceArtstation
+      },
       metadata_enrichment: canEnrich,
-      metadata_enrichment_reason: canEnrich ? null : 'Set DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET to enable engagement-based ranking',
+      metadata_enrichment_reason: canEnrich ? null : 'DeviantArt engagement enrichment disabled (set DEVIANTART_CLIENT_ID and DEVIANTART_CLIENT_SECRET). ArtStation uses likes/views from search payload.',
       debug,
       items: diversified
     });
@@ -353,6 +411,211 @@ async function searchDeviantArtRss(searchText, limit, { allowMature }) {
   return parseRssItems(xml)
     .filter(item => item.title && item.link && item.image_url)
     .slice(0, limit);
+}
+
+async function searchArtStationProjects(searchText, limit, { allowMature }) {
+  const target = Math.max(1, Math.min(120, Number(limit) || 30));
+  const perPage = Math.min(100, Math.max(12, target));
+  const out = [];
+  const seen = new Set();
+  for (let page = 1; page <= 2; page += 1) {
+    const rows = await fetchArtStationSearchPage(searchText, page, perPage);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const item = mapArtStationProject(row, searchText);
+      if (!item) continue;
+      if (!allowMature && item.is_mature) continue;
+      if (seen.has(item.hash_id)) continue;
+      seen.add(item.hash_id);
+      out.push(item);
+      if (out.length >= target) return out;
+    }
+  }
+  return out;
+}
+
+async function fetchArtStationSearchPage(searchText, page, perPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page) || 1)),
+    per_page: String(Math.max(1, Math.min(100, Number(perPage) || 24))),
+    query: String(searchText || ''),
+    sorting: 'relevance'
+  });
+  const url = `${ARTSTATION_SEARCH_URL}?${params.toString()}`;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(url, {
+        headers: {
+          'User-Agent': 'bookshelf-fanart-prototype/1.0 (contact: local-dev)',
+          'Accept': 'application/json'
+        }
+      }, 10000);
+      if (response.status === 429 && attempt < 3) {
+        await sleep(computeRetryDelayMs(response.headers.get('retry-after'), attempt));
+        continue;
+      }
+      if (!response.ok) return [];
+      const payload = await response.json();
+      return Array.isArray(payload?.data) ? payload.data : [];
+    } catch {
+      if (attempt < 3) {
+        await sleep(computeRetryDelayMs(null, attempt));
+        continue;
+      }
+      return [];
+    }
+  }
+  return [];
+}
+
+function mapArtStationProject(row, query) {
+  const hashId = String(row?.hash_id || '').trim();
+  if (!hashId) return null;
+  const cover = row?.cover || {};
+  const imageUrl = normalizeImageUrl(
+    cover.medium_image_url ||
+    cover.small_image_url ||
+    cover.large_image_url ||
+    cover.small_square_url ||
+    cover.medium_square_url ||
+    ''
+  );
+  if (!imageUrl) return null;
+  const permalink = String(row?.permalink || '').trim();
+  const projectUrl = permalink.startsWith('http') ? permalink : (permalink ? `https://www.artstation.com${permalink}` : `https://www.artstation.com/projects/${hashId}`);
+  const tags = normalizeTags(row?.tags || []);
+  const user = row?.user || {};
+  const creator = String(user.full_name || user.username || '').trim() || null;
+  const title = String(row?.title || '').trim() || null;
+  const descriptionText = String(row?.description || '').trim() || null;
+  const likes = Number(row?.likes_count) || 0;
+  const views = Number(row?.views_count) || 0;
+  const mature = Boolean(row?.is_adult || row?.adult_content || row?.nsfw || row?.hide_as_adult);
+  return {
+    source: 'artstation',
+    hash_id: hashId,
+    title,
+    link: projectUrl,
+    image_url: imageUrl,
+    published_at: String(row?.published_at || row?.created_at || '').trim() || null,
+    creator,
+    creator_key: normalizeCreator(creator || user.username || hashId),
+    description_text: descriptionText,
+    image_width: Number(cover.width) || null,
+    image_height: Number(cover.height) || null,
+    tags,
+    stats: {
+      likes,
+      views
+    },
+    query,
+    is_mature: mature
+  };
+}
+
+function buildFanartDedupeKey(item) {
+  if (!item) return '';
+  if (item.source === 'artstation') return `artstation:${String(item.hash_id || item.link || '').trim().toLowerCase()}`;
+  return `deviantart:${String(item.link || item.image_url || '').trim().toLowerCase()}`;
+}
+
+function buildArtStationSearchQueries(baseQueries, expandedTerms) {
+  const seeds = dedupeQueryStrings([
+    ...(Array.isArray(baseQueries) ? baseQueries : []),
+    ...(Array.isArray(expandedTerms) ? expandedTerms : [])
+  ]);
+  const out = [];
+  for (const seed of seeds) {
+    const cleaned = String(seed || '').trim();
+    if (!cleaned) continue;
+    const lower = cleaned.toLowerCase();
+    out.push(cleaned);
+    if (!/\bfan\s*art\b/.test(lower)) out.push(`${cleaned} fan art`);
+    if (!/\bfanart\b/.test(lower)) out.push(`${cleaned} fanart`);
+    if (!/\billustration\b/.test(lower)) out.push(`${cleaned} illustration`);
+    if (!/\bartwork\b/.test(lower)) out.push(`${cleaned} artwork`);
+  }
+  return dedupeQueryStrings(out).slice(0, 16);
+}
+
+async function getArtStationExpandedTerms({ series, queries }) {
+  const key = buildArtstationCacheKey(series);
+  if (!key) return [];
+  const now = Date.now();
+  const cached = artstationAliasCache.get(key);
+  if (cached && cached.expiresAtMs > now) return cached.terms;
+
+  const fallbackTerms = buildArtStationFallbackTerms(series, queries);
+  if (!aiClient) {
+    artstationAliasCache.set(key, { terms: fallbackTerms, expiresAtMs: now + (180 * 24 * 60 * 60 * 1000) });
+    return fallbackTerms;
+  }
+  try {
+    const seriesName = String(series?.series_name || '').trim();
+    const authorName = String(series?.author_name || '').trim();
+    const firstBookTitle = String(series?.first_book_title || '').trim();
+    const prompt = [
+      'Generate a compact set of ArtStation search aliases for fan art discovery.',
+      `Series: ${seriesName || 'unknown'}`,
+      authorName ? `Author: ${authorName}` : null,
+      firstBookTitle ? `First book: ${firstBookTitle}` : null,
+      `Current search seeds: ${dedupeQueryStrings(queries || []).slice(0, 8).join(' | ')}`,
+      'Return ONLY JSON with key: terms.',
+      'terms must be an array of 4-10 short strings that artists would realistically tag or title.',
+      'Prefer franchise aliases, adaptation names, setting names, and iconic character names.',
+      'No subreddit names, no flair syntax, no punctuation-heavy strings.'
+    ].filter(Boolean).join('\n');
+    const message = await aiClient.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 260,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    const lastContent = message.content[message.content.length - 1];
+    const text = lastContent?.type === 'text' ? lastContent.text : '';
+    const parsed = parseJsonPayloadLoose(text);
+    const terms = sanitizeArtStationAliasTerms(parsed?.terms);
+    const merged = dedupeQueryStrings([...fallbackTerms, ...terms]).slice(0, 12);
+    artstationAliasCache.set(key, { terms: merged, expiresAtMs: now + (180 * 24 * 60 * 60 * 1000) });
+    return merged;
+  } catch {
+    artstationAliasCache.set(key, { terms: fallbackTerms, expiresAtMs: now + (180 * 24 * 60 * 60 * 1000) });
+    return fallbackTerms;
+  }
+}
+
+function sanitizeArtStationAliasTerms(values) {
+  const out = [];
+  for (const value of values || []) {
+    const cleaned = String(value || '')
+      .replace(/[\r\n\t]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!cleaned) continue;
+    if (cleaned.length < 2 || cleaned.length > 64) continue;
+    if (/(^|\s)flair(_name)?:/i.test(cleaned)) continue;
+    out.push(cleaned);
+  }
+  return dedupeQueryStrings(out);
+}
+
+function buildArtstationCacheKey(series) {
+  const seriesId = String(series?.id || '').trim();
+  if (seriesId) return `series:${seriesId}`;
+  const seriesName = normalizeSearchText(String(series?.series_name || '').trim());
+  if (!seriesName) return '';
+  return `name:${seriesName}`;
+}
+
+function buildArtStationFallbackTerms(series, queries) {
+  const out = [];
+  const seriesName = String(series?.series_name || '').trim();
+  const firstBook = stripBookSubtitle(String(series?.first_book_title || '').trim());
+  const acronym = buildSeriesAcronym(seriesName);
+  if (seriesName) out.push(seriesName);
+  if (firstBook) out.push(firstBook);
+  if (acronym) out.push(acronym);
+  out.push(...dedupeQueryStrings(queries || []).slice(0, 6));
+  return dedupeQueryStrings(out).slice(0, 10);
 }
 
 async function loadSeriesContext(seriesId) {
@@ -1201,7 +1464,9 @@ function extractDimensionsFromUrl(url) {
 function passesQualityFloor(item, minEdge) {
   const width = Number(item.image_width);
   const height = Number(item.image_height);
-  if (!Number.isFinite(width) || !Number.isFinite(height)) return false;
+  if (!Number.isFinite(width) || !Number.isFinite(height)) {
+    return String(item?.source || '') === 'artstation';
+  }
   return Math.max(width, height) >= minEdge;
 }
 
@@ -1231,6 +1496,16 @@ function computePopularityScore(stats) {
     Math.log1p(favourites) * 3.2 +
     Math.log1p(comments) * 1.3 +
     Math.log1p(downloads) * 1.8
+  );
+}
+
+function computeArtStationPopularityScore(stats) {
+  if (!stats) return 0;
+  const likes = Number(stats.likes) || 0;
+  const views = Number(stats.views) || 0;
+  return (
+    Math.log1p(likes) * 3.8 +
+    Math.log1p(views) * 2.2
   );
 }
 

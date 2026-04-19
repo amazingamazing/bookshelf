@@ -34,7 +34,8 @@ export default function SeriesView() {
     queries: [],
     metadataEnrichment: false,
     metadataReason: null,
-    debug: null
+    debug: null,
+    sourcesEnabled: { deviantart: true, artstation: true }
   })
   const [redditFanart, setRedditFanart] = useState({
     loading: false,
@@ -50,7 +51,9 @@ export default function SeriesView() {
     sortMode: 'popular',
     timeWindow: 'all',
     excludeAi: true,
-    perCreatorCap: 2
+    perCreatorCap: 2,
+    sourceDeviantart: true,
+    sourceArtstation: true
   })
   const [debugCopyStatus, setDebugCopyStatus] = useState('')
   const [showDebug, setShowDebug] = useState(false)
@@ -69,7 +72,7 @@ export default function SeriesView() {
     if (!series?.id) return
     loadSeriesFanart()
     loadSeriesRedditFanart()
-  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap])
+  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap, fanartControls.sourceDeviantart, fanartControls.sourceArtstation])
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -111,7 +114,8 @@ export default function SeriesView() {
       queries: [],
       metadataEnrichment: false,
       metadataReason: null,
-      debug: null
+      debug: null,
+      sourcesEnabled: { deviantart: fanartControls.sourceDeviantart, artstation: fanartControls.sourceArtstation }
     })
     try {
       const params = new URLSearchParams({
@@ -122,7 +126,9 @@ export default function SeriesView() {
         sort_mode: fanartControls.sortMode,
         time_window: fanartControls.timeWindow,
         exclude_ai: fanartControls.excludeAi ? 'true' : 'false',
-        per_creator_cap: String(fanartControls.perCreatorCap)
+        per_creator_cap: String(fanartControls.perCreatorCap),
+        source_deviantart: fanartControls.sourceDeviantart ? 'true' : 'false',
+        source_artstation: fanartControls.sourceArtstation ? 'true' : 'false'
       })
       const res = await fetch(`/api/fanart/deviantart?${params.toString()}`)
       const data = await res.json()
@@ -134,7 +140,8 @@ export default function SeriesView() {
         queries: data.queries || [],
         metadataEnrichment: Boolean(data.metadata_enrichment),
         metadataReason: data.metadata_enrichment_reason || null,
-        debug: data.debug || null
+        debug: data.debug || null,
+        sourcesEnabled: data.sources_enabled || { deviantart: fanartControls.sourceDeviantart, artstation: fanartControls.sourceArtstation }
       })
     } catch (err) {
       setFanart({
@@ -144,7 +151,8 @@ export default function SeriesView() {
         queries: [],
         metadataEnrichment: false,
         metadataReason: null,
-        debug: null
+        debug: null,
+        sourcesEnabled: { deviantart: fanartControls.sourceDeviantart, artstation: fanartControls.sourceArtstation }
       })
     }
   }
@@ -200,10 +208,12 @@ export default function SeriesView() {
       prefs: fanartPrefs,
       queries: fanart.queries,
       debug: fanart.debug,
+      sources_enabled: fanart.sourcesEnabled,
       items: fanart.items.map(item => ({
         title: item.title,
         creator: item.creator,
         link: item.link,
+        source: item.source,
         query: item.query,
         relevance_reason: item.relevance_reason,
         score: item.score,
@@ -376,7 +386,7 @@ export default function SeriesView() {
       {/* Series fan art */}
       <div style={{ marginTop: 32 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-          <h2 style={{ color: '#e8e4dc', fontSize: 18 }}>Fan art (DeviantArt)</h2>
+          <h2 style={{ color: '#e8e4dc', fontSize: 18 }}>Fan art (DeviantArt + ArtStation)</h2>
           <button onClick={loadSeriesFanart} disabled={fanart.loading} style={actionBtn}>
             {fanart.loading ? 'Searching...' : 'Refresh fan art'}
           </button>
@@ -428,13 +438,29 @@ export default function SeriesView() {
             />
             Exclude AI art
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9a9488', fontSize: 12, padding: '0 4px' }}>
+            <input
+              type="checkbox"
+              checked={fanartControls.sourceDeviantart}
+              onChange={e => setFanartControls(prev => ({ ...prev, sourceDeviantart: e.target.checked }))}
+            />
+            DeviantArt
+          </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9a9488', fontSize: 12, padding: '0 4px' }}>
+            <input
+              type="checkbox"
+              checked={fanartControls.sourceArtstation}
+              onChange={e => setFanartControls(prev => ({ ...prev, sourceArtstation: e.target.checked }))}
+            />
+            ArtStation
+          </label>
         </div>
         <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
           Variety setting controls artist diversity in each result set (lower cap = more unique creators).
         </div>
         {!fanart.loading && (
           <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
-            Ranking: {fanart.metadataEnrichment ? 'Quality + engagement (views/favourites/comments/downloads)' : 'Quality-only fallback'}
+            Ranking: merged relevance + quality + engagement (DeviantArt + ArtStation)
             {!fanart.metadataEnrichment && fanart.metadataReason ? ` — ${fanart.metadataReason}` : ''}
           </div>
         )}
@@ -446,6 +472,7 @@ export default function SeriesView() {
             {showDebug && (
               <div style={{ marginTop: 8, color: '#6a6460', fontSize: 11, lineHeight: 1.6 }}>
                 <div>Merged candidates: {fanart.debug.stage_counts?.merged ?? 0}</div>
+                <div>Source candidates: DA {fanart.debug.per_source_counts?.merged_raw?.deviantart ?? 0} · AS {fanart.debug.per_source_counts?.merged_raw?.artstation ?? 0}</div>
                 <div>Unique links: {fanart.debug.stage_counts?.unique_links ?? 0}</div>
                 <div>Kept by relevance: {fanart.debug.stage_counts?.relevance_kept ?? 0}</div>
                 <div>Rejected by relevance: {fanart.debug.stage_counts?.relevance_rejected ?? 0}</div>
@@ -453,6 +480,9 @@ export default function SeriesView() {
                 <div>Rejected by quality floor: {fanart.debug.stage_counts?.quality_rejected ?? 0}</div>
                 <div>Rejected by time window: {fanart.debug.stage_counts?.time_rejected ?? 0}</div>
                 <div>Rejected by AI filter: {fanart.debug.stage_counts?.ai_rejected ?? 0}</div>
+                {fanart.debug.artstation_expanded_terms?.length > 0 && (
+                  <div>ArtStation expanded terms: {fanart.debug.artstation_expanded_terms.join(' | ')}</div>
+                )}
               </div>
             )}
           </div>
@@ -490,14 +520,14 @@ export default function SeriesView() {
                   <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
                   <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View on DeviantArt'}</div>
                   <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
-                    source query: {item.query || 'n/a'}
+                    source: {item.source || 'unknown'} · query: {item.query || 'n/a'}
                   </div>
                   <div style={{ color: '#6a6460', fontSize: 10 }}>
                     relevance: {item.relevance_reason || 'n/a'}
                   </div>
-                  {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads) && (
+                  {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads || item.stats?.likes) && (
                     <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
-                      ❤ {item.stats?.favourites || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
+                      ❤ {item.stats?.favourites || item.stats?.likes || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
                     </div>
                   )}
                 </div>
