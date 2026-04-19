@@ -133,11 +133,11 @@ router.get('/deviantart', async (req, res) => {
     }
 
     const dedupedQueries = Array.from(new Set(searchQueries.map(q => q.trim()).filter(Boolean)));
-    const anchorPhrases = Array.from(new Set(relevanceHints
+    let anchorPhrases = Array.from(new Set(relevanceHints
       .map(stripFanArtSuffix)
       .map(v => String(v || '').trim())
       .filter(v => v.length >= 4)));
-    const relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
+    let relevanceProfiles = dedupedQueries.map(buildRelevanceProfile);
     const debug = {
       sources_enabled: {
         deviantart: sourceDeviantart,
@@ -195,7 +195,19 @@ router.get('/deviantart', async (req, res) => {
         merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'artstation' })));
         if (merged.length >= limit * 18) break;
       }
+      if (expandedTerms.length) {
+        anchorPhrases = Array.from(new Set([
+          ...anchorPhrases,
+          ...expandedTerms.map(v => String(v || '').trim())
+        ])).filter(v => v.length >= 4).slice(0, 32);
+        const relevanceSeeds = dedupeQueryStrings([
+          ...dedupedQueries,
+          ...expandedTerms
+        ]);
+        relevanceProfiles = relevanceSeeds.map(buildRelevanceProfile);
+      }
     }
+    debug.anchor_phrases = anchorPhrases;
     debug.stage_counts.merged = merged.length;
 
     const seen = new Set();
