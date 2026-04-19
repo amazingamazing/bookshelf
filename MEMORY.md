@@ -32,6 +32,8 @@
 - ArtStation mapper now supports top-level cover URL fields from current search payload schema; DeviantArt search now applies a fan-art suffix fallback when base queries return zero rows
 - ArtStation relevance gating now includes expanded alias terms in anchor/profile matching (prevents valid ArtStation rows from being filtered out as weak relevance)
 - Series Reddit fan-art UI now handles non-JSON API failures (HTML error pages) with readable error text and copyable error details payload
+- Reddit endpoint now uses per-subreddit time budgets and reduced retry/query fan-out to avoid upstream 502 timeout pages during long fan-art fetch runs
+- Series page now has a Reddit source toggle in fan-art controls (default off) so Reddit fetches only run when explicitly enabled
 - Fan-art merge now uses per-source candidate budgets (prevents DeviantArt from exhausting pool before ArtStation runs), and ArtStation query order now prioritizes concise seeds
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions

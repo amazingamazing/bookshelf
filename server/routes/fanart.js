@@ -360,6 +360,7 @@ router.get('/reddit', async (req, res) => {
     const perSubredditLimit = Math.max(1, Math.min(8, Number(req.query.per_subreddit_limit) || 5));
     const subredditLimit = Math.max(1, Math.min(12, Number(req.query.subreddit_limit) || 6));
     const overallLimit = Math.max(5, Math.min(120, Number.isFinite(rawLimit) ? rawLimit : perSubredditLimit * subredditLimit));
+    const perSubredditBudgetMs = Math.max(5000, Math.min(45000, Number(req.query.per_subreddit_budget_ms) || 18000));
     if (!Number.isFinite(rawSeriesId)) {
       return res.status(400).json({ error: 'Provide series_id' });
     }
@@ -395,7 +396,8 @@ router.get('/reddit', async (req, res) => {
       const result = await collectRedditImagesForSubreddit(subreddit, queries, {
         perSubredditLimit,
         allowMature,
-        series
+        series,
+        timeBudgetMs: perSubredditBudgetMs
       });
       subredditCounts[subreddit] = result.items.length;
       subredditStats[subreddit] = result.stats || null;
@@ -732,6 +734,8 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
   const perSubredditLimit = Math.max(1, Number(options?.perSubredditLimit) || 5);
   const allowMature = Boolean(options?.allowMature);
   const series = options?.series || null;
+  const timeBudgetMs = Math.max(5000, Math.min(45000, Number(options?.timeBudgetMs) || 18000));
+  const startedAtMs = Date.now();
   const safeSubreddit = String(subreddit || '').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase();
   if (!safeSubreddit) return { items: [], error: 'invalid_subreddit' };
 
@@ -764,6 +768,10 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     ];
 
     for (const pass of discoveryPasses) {
+      if (Date.now() - startedAtMs > timeBudgetMs) {
+        lastError = `subreddit_time_budget_exceeded:${timeBudgetMs}`;
+        break;
+      }
       const path = pass.path;
       const listing = await fetchRedditListingByPath(path);
       if (Array.isArray(listing.trace) && listing.trace.length) {
@@ -811,9 +819,13 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     stats.selected_flair_targets = flairQuerySeed;
     const flairQueries = buildFlairFocusedQueries(flairQuerySeed);
     const filteredPickedQueries = filterQueriesForSelectedFlair(pickedQueries, pickedFlairName);
-    const queryCandidates = dedupeQueryStrings([...flairQueries, ...filteredPickedQueries]).slice(0, 16);
+    const queryCandidates = dedupeQueryStrings([...flairQueries, ...filteredPickedQueries]).slice(0, 10);
 
     for (const query of queryCandidates) {
+      if (Date.now() - startedAtMs > timeBudgetMs) {
+        lastError = `subreddit_time_budget_exceeded:${timeBudgetMs}`;
+        break;
+      }
       const path = `/r/${safeSubreddit}/search.json?q=${encodeURIComponent(query)}&restrict_sr=1&sort=top&t=year&limit=100&raw_json=1`;
       const listing = await fetchRedditListingByPath(path);
       if (Array.isArray(listing.trace) && listing.trace.length) {
@@ -866,7 +878,7 @@ async function fetchRedditListingByPath(path) {
   const trace = [];
   let lastError = null;
   for (const host of hosts) {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
       const url = `${host}${path}`;
       try {
         const response = await fetchWithTimeout(url, {
@@ -875,9 +887,9 @@ async function fetchRedditListingByPath(path) {
             'Accept': 'application/json',
             'Accept-Language': 'en-US,en;q=0.9'
           }
-        }, 10000);
+        }, 5000);
         trace.push({ host, status: response.status, attempt });
-        if (response.status === 429 && attempt < 3) {
+        if (response.status === 429 && attempt < 2) {
           const waitMs = computeRetryDelayMs(response.headers.get('retry-after'), attempt);
           trace.push({ host, status: 'retrying_429', attempt, wait_ms: waitMs });
           await sleep(waitMs);
@@ -894,7 +906,7 @@ async function fetchRedditListingByPath(path) {
         const message = err?.message || 'request_failed';
         trace.push({ host, status: 'error', error: message, attempt });
         lastError = message;
-        if (attempt < 3) {
+        if (attempt < 2) {
           const waitMs = computeRetryDelayMs(null, attempt);
           trace.push({ host, status: 'retrying_error', attempt, wait_ms: waitMs });
           await sleep(waitMs);

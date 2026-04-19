@@ -82,7 +82,8 @@ export default function SeriesView() {
     excludeAi: true,
     perCreatorCap: 2,
     sourceDeviantart: true,
-    sourceArtstation: true
+    sourceArtstation: true,
+    sourceReddit: false
   })
   const [debugCopyStatus, setDebugCopyStatus] = useState('')
   const [showDebug, setShowDebug] = useState(false)
@@ -104,8 +105,21 @@ export default function SeriesView() {
   useEffect(() => {
     if (!series?.id) return
     loadSeriesFanart()
-    loadSeriesRedditFanart()
-  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap, fanartControls.sourceDeviantart, fanartControls.sourceArtstation])
+    if (fanartControls.sourceReddit) {
+      loadSeriesRedditFanart()
+    } else {
+      setRedditFanart({
+        loading: false,
+        error: null,
+        items: [],
+        subreddits: [],
+        queries: [],
+        debug: null,
+        discoverySource: null
+      })
+      setRedditErrorDetails(null)
+    }
+  }, [series?.id, fanartPrefs.allowMature, fanartPrefs.minEdge, fanartControls.sortMode, fanartControls.timeWindow, fanartControls.excludeAi, fanartControls.perCreatorCap, fanartControls.sourceDeviantart, fanartControls.sourceArtstation, fanartControls.sourceReddit])
 
   useEffect(() => {
     const onStorage = (e) => {
@@ -510,6 +524,14 @@ export default function SeriesView() {
             />
             ArtStation
           </label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#9a9488', fontSize: 12, padding: '0 4px' }}>
+            <input
+              type="checkbox"
+              checked={fanartControls.sourceReddit}
+              onChange={e => setFanartControls(prev => ({ ...prev, sourceReddit: e.target.checked }))}
+            />
+            Reddit
+          </label>
         </div>
         <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
           Variety setting controls artist diversity in each result set (lower cap = more unique creators).
@@ -597,27 +619,33 @@ export default function SeriesView() {
           </button>
         </div>
 
-        {redditFanart.subreddits?.length > 0 && (
+        {!fanartControls.sourceReddit && (
+          <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 12 }}>
+            Reddit source is disabled. Enable the Reddit checkbox in fan-art controls to fetch Reddit results.
+          </div>
+        )}
+
+        {fanartControls.sourceReddit && redditFanart.subreddits?.length > 0 && (
           <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 8 }}>
             Subreddits: {redditFanart.subreddits.map(sub => `r/${sub}`).join(' | ')}
           </div>
         )}
-        {redditFanart.queries?.length > 0 && (
+        {fanartControls.sourceReddit && redditFanart.queries?.length > 0 && (
           <div style={{ color: '#6a6460', fontSize: 12, marginBottom: 8 }}>
             Queries: {redditFanart.queries.join(' | ')}
           </div>
         )}
-        {redditFanart.discoverySource && (
+        {fanartControls.sourceReddit && redditFanart.discoverySource && (
           <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
             Discovery source: {redditFanart.discoverySource === 'claude' ? 'Claude' : 'Fallback'}
           </div>
         )}
-        {redditFanart.debug?.subreddit_counts && (
+        {fanartControls.sourceReddit && redditFanart.debug?.subreddit_counts && (
           <div style={{ color: '#6a6460', fontSize: 11, marginBottom: 12 }}>
             Per subreddit: {Object.entries(redditFanart.debug.subreddit_counts).map(([subreddit, count]) => `r/${subreddit}=${count}`).join(' | ')}
           </div>
         )}
-        {redditFanart.debug && (
+        {fanartControls.sourceReddit && redditFanart.debug && (
           <div style={{ marginBottom: 12 }}>
             <button onClick={copyRedditDebugDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
               {redditDebugCopyStatus || 'Copy Reddit debug details'}
@@ -636,7 +664,7 @@ export default function SeriesView() {
           </div>
         )}
 
-        {redditFanart.error && (
+        {fanartControls.sourceReddit && redditFanart.error && (
           <div style={{ marginBottom: 12 }}>
             <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 8, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
               {redditFanart.error}
@@ -649,13 +677,13 @@ export default function SeriesView() {
           </div>
         )}
 
-        {!redditFanart.loading && !redditFanart.error && redditFanart.items.length === 0 && (
+        {fanartControls.sourceReddit && !redditFanart.loading && !redditFanart.error && redditFanart.items.length === 0 && (
           <div style={{ color: '#9a9488', fontSize: 13 }}>
             No Reddit fan-art image posts found yet for this series.
           </div>
         )}
 
-        {redditFanart.items.length > 0 && (
+        {fanartControls.sourceReddit && redditFanart.items.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
             {redditFanart.items.map((item, i) => (
               <a
