@@ -29,6 +29,7 @@
 - ArtStation alias/query expansion now uses cached Claude-generated terms per series and reports expanded terms in fan-art debug payload
 - Series fan-art UI now renders separate DeviantArt vs ArtStation result sections for direct source-quality comparison
 - Reddit fan-art retrieval now targets multiple discovered art-like flairs (not only one selected flair) with per-flair output caps for better variety
+- ArtStation mapper now supports top-level cover URL fields from current search payload schema; DeviantArt search now applies a fan-art suffix fallback when base queries return zero rows
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)

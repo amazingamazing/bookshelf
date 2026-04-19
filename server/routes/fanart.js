@@ -167,9 +167,17 @@ router.get('/deviantart', async (req, res) => {
     const merged = [];
     if (sourceDeviantart) {
       for (const query of dedupedQueries) {
-        const itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
-        debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
-        merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'deviantart' })));
+        let itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
+        const queryLower = String(query || '').toLowerCase();
+        if (!itemsForQuery.length && !/\bfan\s*art\b|\bfanart\b|\billustration\b|\bartwork\b/.test(queryLower)) {
+          const fallbackQuery = `${query} fan art`;
+          itemsForQuery = await searchDeviantArtRss(fallbackQuery, Math.max(20, limit * 3), { allowMature });
+          debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
+          merged.push(...itemsForQuery.map(item => ({ ...item, query: fallbackQuery, source: 'deviantart' })));
+        } else {
+          debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
+          merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'deviantart' })));
+        }
         if (merged.length >= limit * 18) break;
       }
     }
@@ -472,16 +480,26 @@ function mapArtStationProject(row, query) {
   const hashId = String(row?.hash_id || '').trim();
   if (!hashId) return null;
   const cover = row?.cover || {};
+  const topLevelCover =
+    row?.cover_url ||
+    row?.small_image_url ||
+    row?.medium_image_url ||
+    row?.large_image_url ||
+    row?.smaller_square_cover_url ||
+    row?.small_square_cover_url ||
+    row?.medium_square_cover_url ||
+    '';
   const imageUrl = normalizeImageUrl(
     cover.medium_image_url ||
     cover.small_image_url ||
     cover.large_image_url ||
+    cover.original_image_url ||
     cover.small_square_url ||
     cover.medium_square_url ||
-    ''
+    topLevelCover
   );
   if (!imageUrl) return null;
-  const permalink = String(row?.permalink || '').trim();
+  const permalink = String(row?.permalink || row?.url || '').trim();
   const projectUrl = permalink.startsWith('http') ? permalink : (permalink ? `https://www.artstation.com${permalink}` : `https://www.artstation.com/projects/${hashId}`);
   const tags = normalizeTags(row?.tags || []);
   const user = row?.user || {};
