@@ -35,6 +35,7 @@
 - Reddit endpoint now uses per-subreddit time budgets and reduced retry/query fan-out to avoid upstream 502 timeout pages during long fan-art fetch runs
 - Series page now has a Reddit source toggle in fan-art controls (default off) so Reddit fetches only run when explicitly enabled
 - Fan-art merge now uses per-source candidate budgets (prevents DeviantArt from exhausting pool before ArtStation runs), and ArtStation query order now prioritizes concise seeds
+- ArtStation items now bypass strict server-side HEAD/GET live-image probes (trust known ArtStation/CDN image URLs) to avoid false negatives that zeroed `live_kept.artstation`
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)

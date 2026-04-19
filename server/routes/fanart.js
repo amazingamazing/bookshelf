@@ -258,7 +258,7 @@ router.get('/deviantart', async (req, res) => {
     let qualityRejected = 0;
     let timeRejected = 0;
     for (const item of unique) {
-      const ok = await urlLooksLikeImage(item.image_url);
+      const ok = await urlLooksLikeImage(item.image_url, item.source);
       if (!ok) continue;
       if (!passesQualityFloor(item, minEdge)) {
         qualityRejected++;
@@ -1532,7 +1532,12 @@ function decodeHtml(value) {
     .replace(/&apos;/g, "'");
 }
 
-async function urlLooksLikeImage(url) {
+async function urlLooksLikeImage(url, source) {
+  if (String(source || '') === 'artstation') {
+    // ArtStation CDN image URLs often block HEAD/GET probes from servers
+    // even when the URL is browser-renderable. Trust known image-like URLs.
+    return isLikelyImageUrl(url);
+  }
   try {
     let res = await fetch(url, { method: 'HEAD' });
     if (!res.ok || res.status === 405) {
