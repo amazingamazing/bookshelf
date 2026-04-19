@@ -31,6 +31,7 @@
 - Reddit fan-art retrieval now targets multiple discovered art-like flairs (not only one selected flair) with per-flair output caps for better variety
 - ArtStation mapper now supports top-level cover URL fields from current search payload schema; DeviantArt search now applies a fan-art suffix fallback when base queries return zero rows
 - ArtStation relevance gating now includes expanded alias terms in anchor/profile matching (prevents valid ArtStation rows from being filtered out as weak relevance)
+- Series Reddit fan-art UI now handles non-JSON API failures (HTML error pages) with readable error text and copyable error details payload
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)

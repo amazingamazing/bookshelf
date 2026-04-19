@@ -19,6 +19,35 @@ function readFanartPrefs() {
   }
 }
 
+async function readApiJson(response, fallbackLabel) {
+  const status = Number(response?.status || 0)
+  const contentType = String(response?.headers?.get('content-type') || '').toLowerCase()
+  const raw = await response.text()
+  let data = null
+  const trimmed = String(raw || '').trim()
+  const looksLikeJson = contentType.includes('application/json') || trimmed.startsWith('{') || trimmed.startsWith('[')
+  if (looksLikeJson && trimmed) {
+    try {
+      data = JSON.parse(trimmed)
+    } catch {
+      data = null
+    }
+  }
+  if (!response.ok) {
+    const jsonError = data && typeof data === 'object' ? String(data.error || '').trim() : ''
+    if (jsonError) throw new Error(jsonError)
+    const htmlLike = trimmed.startsWith('<!doctype') || trimmed.startsWith('<html') || trimmed.startsWith('<')
+    if (htmlLike) {
+      throw new Error(`${fallbackLabel} failed (${status || 'unknown status'}): server returned HTML instead of JSON`)
+    }
+    throw new Error(`${fallbackLabel} failed (${status || 'unknown status'})`)
+  }
+  if (!data) {
+    throw new Error(`${fallbackLabel} failed: response was not valid JSON`)
+  }
+  return data
+}
+
 export default function SeriesView() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -59,6 +88,8 @@ export default function SeriesView() {
   const [showDebug, setShowDebug] = useState(false)
   const [redditDebugCopyStatus, setRedditDebugCopyStatus] = useState('')
   const [showRedditDebug, setShowRedditDebug] = useState(false)
+  const [redditErrorDetails, setRedditErrorDetails] = useState(null)
+  const [redditErrorCopyStatus, setRedditErrorCopyStatus] = useState('')
   const hasAssociatedBooks = Number(series?.book_count || 0) > 0
   const deviantartItems = fanart.items.filter(item => (item.source || 'deviantart') === 'deviantart')
   const artstationItems = fanart.items.filter(item => item.source === 'artstation')
@@ -133,8 +164,7 @@ export default function SeriesView() {
         source_artstation: fanartControls.sourceArtstation ? 'true' : 'false'
       })
       const res = await fetch(`/api/fanart/deviantart?${params.toString()}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch fan art')
+      const data = await readApiJson(res, 'Fan art request')
       setFanart({
         loading: false,
         error: null,
@@ -160,6 +190,7 @@ export default function SeriesView() {
   }
 
   const loadSeriesRedditFanart = async () => {
+    setRedditErrorDetails(null)
     setRedditFanart({
       loading: true,
       error: null,
@@ -178,8 +209,7 @@ export default function SeriesView() {
         subreddit_limit: '6'
       })
       const res = await fetch(`/api/fanart/reddit?${params.toString()}`)
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Failed to fetch Reddit fan art')
+      const data = await readApiJson(res, 'Reddit fan art request')
       setRedditFanart({
         loading: false,
         error: null,
@@ -189,7 +219,19 @@ export default function SeriesView() {
         debug: data.debug || null,
         discoverySource: data.discovery_source || null
       })
+      setRedditErrorDetails(null)
     } catch (err) {
+      setRedditErrorDetails({
+        seriesId: id,
+        prefs: fanartPrefs,
+        controls: {
+          allowMature: fanartPrefs.allowMature,
+          perSubredditLimit: 5,
+          subredditLimit: 6,
+          limit: 40
+        },
+        error: err?.message || 'Unknown error'
+      })
       setRedditFanart({
         loading: false,
         error: err.message,
@@ -264,6 +306,18 @@ export default function SeriesView() {
     } catch {
       setRedditDebugCopyStatus('Copy failed')
       setTimeout(() => setRedditDebugCopyStatus(''), 1800)
+    }
+  }
+
+  const copyRedditErrorDetails = async () => {
+    if (!redditErrorDetails) return
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(redditErrorDetails, null, 2))
+      setRedditErrorCopyStatus('Copied')
+      setTimeout(() => setRedditErrorCopyStatus(''), 1500)
+    } catch {
+      setRedditErrorCopyStatus('Copy failed')
+      setTimeout(() => setRedditErrorCopyStatus(''), 1800)
     }
   }
 
@@ -583,7 +637,16 @@ export default function SeriesView() {
         )}
 
         {redditFanart.error && (
-          <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 12 }}>{redditFanart.error}</div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ color: '#e74c3c', fontSize: 13, marginBottom: 8, whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+              {redditFanart.error}
+            </div>
+            {redditErrorDetails && (
+              <button onClick={copyRedditErrorDetails} style={{ ...actionBtn, fontSize: 11, padding: '4px 10px' }}>
+                {redditErrorCopyStatus || 'Copy Reddit error details'}
+              </button>
+            )}
+          </div>
         )}
 
         {!redditFanart.loading && !redditFanart.error && redditFanart.items.length === 0 && (
