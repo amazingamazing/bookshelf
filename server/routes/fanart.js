@@ -687,6 +687,7 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
   const out = [];
   const seenUrls = new Set();
   const seenPostUrls = new Set();
+  const flairOutputCounts = new Map();
   const pickedQueries = buildRedditSearchQueries((Array.isArray(queries) ? queries : []).slice(0, 4));
   const discoveredFlairs = new Set();
   const flairCounts = new Map();
@@ -701,6 +702,7 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     selected_flair: null,
     selected_flair_reason: null,
     selected_flair_confidence: null,
+    selected_flair_targets: [],
     request_attempts: []
   };
   let lastError = null;
@@ -750,7 +752,12 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
     }
 
     const pickedFlairName = String(pickedFlair?.selectedFlair || '').trim();
-    const flairQuerySeed = pickedFlairName ? [pickedFlairName] : Array.from(discoveredFlairs);
+    const flairQuerySeed = selectRedditArtFlairTargets({
+      selectedFlair: pickedFlairName,
+      flairCounts,
+      discoveredFlairs
+    });
+    stats.selected_flair_targets = flairQuerySeed;
     const flairQueries = buildFlairFocusedQueries(flairQuerySeed);
     const filteredPickedQueries = filterQueriesForSelectedFlair(pickedQueries, pickedFlairName);
     const queryCandidates = dedupeQueryStrings([...flairQueries, ...filteredPickedQueries]).slice(0, 16);
@@ -781,6 +788,8 @@ async function collectRedditImagesForSubreddit(subreddit, queries, options) {
         allowMature,
         preferredFlair: pickedFlairName,
         maxImagesPerPost: 1,
+        flairOutputCounts,
+        maxPerFlair: 3,
         stats
       });
       if (out.length >= perSubredditLimit) {
@@ -961,6 +970,8 @@ function pushImagesFromPosts(posts, options) {
   const allowMature = Boolean(options?.allowMature);
   const preferredFlair = String(options?.preferredFlair || '').trim().toLowerCase();
   const maxImagesPerPost = Math.max(1, Number(options?.maxImagesPerPost) || 1);
+  const flairOutputCounts = options?.flairOutputCounts || new Map();
+  const maxPerFlair = Math.max(1, Number(options?.maxPerFlair) || 3);
   const stats = options?.stats;
 
   for (const post of posts || []) {
@@ -971,6 +982,12 @@ function pushImagesFromPosts(posts, options) {
     if (!artSignal.ok) {
       if (stats) stats.rejected_non_art += 1;
       continue;
+    }
+    const flairText = String(post?.link_flair_text || '').trim();
+    const flairKey = flairText.toLowerCase();
+    if (flairKey) {
+      const seenForFlair = Number(flairOutputCounts.get(flairKey) || 0);
+      if (seenForFlair >= maxPerFlair) continue;
     }
     const postUrl = buildRedditPostUrl(post);
     if (postUrl && seenPostUrls.has(postUrl)) continue;
@@ -998,6 +1015,10 @@ function pushImagesFromPosts(posts, options) {
       });
     }
     if (pushedForPost > 0) {
+      if (flairKey) {
+        const seenForFlair = Number(flairOutputCounts.get(flairKey) || 0);
+        flairOutputCounts.set(flairKey, seenForFlair + pushedForPost);
+      }
       if (postUrl) seenPostUrls.add(postUrl);
       if (stats) stats.kept_posts += 1;
     }
@@ -1223,6 +1244,26 @@ function buildFlairFocusedQueries(flairs) {
     out.push('flair_name:\"Fan Art Book 3\"');
   }
   return dedupeQueryStrings(out).slice(0, 12);
+}
+
+function selectRedditArtFlairTargets({ selectedFlair, flairCounts, discoveredFlairs }) {
+  const selected = String(selectedFlair || '').trim();
+  const artLikeByCount = [...(flairCounts || new Map()).entries()]
+    .filter(([name]) => /\bart\b|fan[\s-]?art|illustration|drawing|sketch/i.test(String(name || '')))
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => String(name || '').trim())
+    .filter(Boolean);
+  const discoveredArtLike = (Array.isArray(discoveredFlairs) ? discoveredFlairs : [])
+    .map(v => String(v || '').trim())
+    .filter(Boolean)
+    .filter(v => /\bart\b|fan[\s-]?art|illustration|drawing|sketch/i.test(v));
+  const merged = dedupeQueryStrings([
+    selected,
+    ...artLikeByCount,
+    ...discoveredArtLike
+  ]).slice(0, 6);
+  if (merged.length) return merged;
+  return selected ? [selected] : [];
 }
 
 function filterQueriesForSelectedFlair(queries, selectedFlair) {

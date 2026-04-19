@@ -27,6 +27,8 @@
 - Reddit discovery/search seed queries now strip raw `flair:`/`flair_name:` strings; flair queries are generated only from discovered subreddit flair names
 - Reddit collector now short-circuits after discovery when subreddit access is fully blocked (403) to avoid noisy doomed query storms
 - ArtStation alias/query expansion now uses cached Claude-generated terms per series and reports expanded terms in fan-art debug payload
+- Series fan-art UI now renders separate DeviantArt vs ArtStation result sections for direct source-quality comparison
+- Reddit fan-art retrieval now targets multiple discovered art-like flairs (not only one selected flair) with per-flair output caps for better variety
 - Fan art debug tools (stage counts + copy debug payload button)
 - Fan art scoring pipeline now uses broad discovery + weighted ranking (quality + optional engagement + relevance), with stricter relevance gating to reduce weak token collisions
 - Shelf Cinema ambient mode rebuilt to a single blurred-backdrop cinema mode (fullscreen API support, weighted tier rotation, cover-first startup, fan-art hydration, attribution-aware display, click/ESC exit)
@@ -68,6 +70,8 @@
 - [ ] reduce need for DB resets while iterating on imports/cover data
 - [ ] improve fan art source quality/ranking signals and result variety
 - [x] Add ArtStation as second fan-art source with merged pipeline + source toggles + per-source debug counts
+- [x] Separate DeviantArt and ArtStation display on series pages while keeping merged backend ranking pipeline
+- [x] Broaden Reddit DCC-style retrieval by querying multiple discovered fan-art flair targets and reducing single-flair saturation
 - [ ] optional follow-up: filter dead Open Library cover links from edition picker before display
 - [ ] evaluate perceptual-hash duplicate detection quality and choose a default distance threshold for Cinema feed dedupe
 

@@ -60,6 +60,8 @@ export default function SeriesView() {
   const [redditDebugCopyStatus, setRedditDebugCopyStatus] = useState('')
   const [showRedditDebug, setShowRedditDebug] = useState(false)
   const hasAssociatedBooks = Number(series?.book_count || 0) > 0
+  const deviantartItems = fanart.items.filter(item => (item.source || 'deviantart') === 'deviantart')
+  const artstationItems = fanart.items.filter(item => item.source === 'artstation')
 
   useEffect(() => {
     fetch(`/api/series/${id}`).then(r => r.json()).then(data => {
@@ -499,40 +501,35 @@ export default function SeriesView() {
         )}
 
         {fanart.items.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
-            {fanart.items.map((item, i) => (
-              <a
-                key={`${item.link}-${i}`}
-                href={item.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{
-                  textDecoration: 'none',
-                  background: '#1a1814',
-                  border: '1px solid #2a2822',
-                  borderRadius: 8
-                }}
-              >
-                <div style={{ width: '100%', background: '#2a2822', padding: 8 }}>
-                  <img src={item.image_url} alt={item.title} style={{ width: '100%', height: 'auto', maxHeight: 260, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+          <div style={{ display: 'grid', gap: 18 }}>
+            <div>
+              <div style={{ color: '#9a9488', fontSize: 12, marginBottom: 8 }}>
+                DeviantArt results: {deviantartItems.length}
+              </div>
+              {deviantartItems.length === 0 ? (
+                <div style={{ color: '#6a6460', fontSize: 12 }}>No DeviantArt items in this run.</div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
+                  {deviantartItems.map((item, i) => (
+                    <FanartCard key={`da-${item.link}-${i}`} item={item} />
+                  ))}
                 </div>
-                <div style={{ padding: '8px 9px' }}>
-                  <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
-                  <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View on DeviantArt'}</div>
-                  <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
-                    source: {item.source || 'unknown'} · query: {item.query || 'n/a'}
-                  </div>
-                  <div style={{ color: '#6a6460', fontSize: 10 }}>
-                    relevance: {item.relevance_reason || 'n/a'}
-                  </div>
-                  {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads || item.stats?.likes) && (
-                    <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
-                      ❤ {item.stats?.favourites || item.stats?.likes || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
-                    </div>
-                  )}
+              )}
+            </div>
+            <div>
+              <div style={{ color: '#9a9488', fontSize: 12, marginBottom: 8 }}>
+                ArtStation results: {artstationItems.length}
+              </div>
+              {artstationItems.length === 0 ? (
+                <div style={{ color: '#6a6460', fontSize: 12 }}>No ArtStation items in this run.</div>
+              ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(170px, 1fr))', gap: 10 }}>
+                  {artstationItems.map((item, i) => (
+                    <FanartCard key={`as-${item.link}-${i}`} item={item} />
+                  ))}
                 </div>
-              </a>
-            ))}
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -672,6 +669,41 @@ function formatSeriesOrder(value) {
 
 function Chip({ label, color = '#2a2822', text = '#9a9488' }) {
   return <span style={{ background: color, color: text, padding: '3px 10px', borderRadius: 20, fontSize: 12 }}>{label}</span>
+}
+
+function FanartCard({ item }) {
+  return (
+    <a
+      href={item.link}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        textDecoration: 'none',
+        background: '#1a1814',
+        border: '1px solid #2a2822',
+        borderRadius: 8
+      }}
+    >
+      <div style={{ width: '100%', background: '#2a2822', padding: 8 }}>
+        <img src={item.image_url} alt={item.title} style={{ width: '100%', height: 'auto', maxHeight: 260, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+      </div>
+      <div style={{ padding: '8px 9px' }}>
+        <div style={{ color: '#e8e4dc', fontSize: 12, lineHeight: 1.35, marginBottom: 3 }}>{item.title}</div>
+        <div style={{ color: '#9a9488', fontSize: 11 }}>{item.creator ? `by ${item.creator}` : 'View source'}</div>
+        <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
+          source: {item.source || 'unknown'} · query: {item.query || 'n/a'}
+        </div>
+        <div style={{ color: '#6a6460', fontSize: 10 }}>
+          relevance: {item.relevance_reason || 'n/a'}
+        </div>
+        {(item.stats?.favourites || item.stats?.views || item.stats?.comments || item.stats?.downloads || item.stats?.likes) && (
+          <div style={{ color: '#6a6460', fontSize: 10, marginTop: 4 }}>
+            ❤ {item.stats?.favourites || item.stats?.likes || 0} · 👁 {item.stats?.views || 0} · 💬 {item.stats?.comments || 0} · ⬇ {item.stats?.downloads || 0}
+          </div>
+        )}
+      </div>
+    </a>
+  )
 }
 
 function StatusBadge({ status }) {
