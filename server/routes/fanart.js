@@ -147,6 +147,7 @@ router.get('/deviantart', async (req, res) => {
       anchor_phrases: anchorPhrases,
       artstation_expanded_terms: [],
       artstation_queries: [],
+      artstation_executed_queries: [],
       per_source_counts: {
         merged_raw: { deviantart: 0, artstation: 0 },
         relevance_kept: { deviantart: 0, artstation: 0 },
@@ -165,7 +166,9 @@ router.get('/deviantart', async (req, res) => {
       }
     };
     const merged = [];
+    const perSourceTarget = Math.max(limit * 9, 36);
     if (sourceDeviantart) {
+      let mergedDeviant = 0;
       for (const query of dedupedQueries) {
         let itemsForQuery = await searchDeviantArtRss(query, Math.max(20, limit * 3), { allowMature });
         const queryLower = String(query || '').toLowerCase();
@@ -173,12 +176,14 @@ router.get('/deviantart', async (req, res) => {
           const fallbackQuery = `${query} fan art`;
           itemsForQuery = await searchDeviantArtRss(fallbackQuery, Math.max(20, limit * 3), { allowMature });
           debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
+          mergedDeviant += itemsForQuery.length;
           merged.push(...itemsForQuery.map(item => ({ ...item, query: fallbackQuery, source: 'deviantart' })));
         } else {
           debug.per_source_counts.merged_raw.deviantart += itemsForQuery.length;
+          mergedDeviant += itemsForQuery.length;
           merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'deviantart' })));
         }
-        if (merged.length >= limit * 18) break;
+        if (mergedDeviant >= perSourceTarget) break;
       }
     }
     if (sourceArtstation) {
@@ -189,11 +194,14 @@ router.get('/deviantart', async (req, res) => {
       debug.artstation_expanded_terms = expandedTerms;
       const artstationQueries = buildArtStationSearchQueries(dedupedQueries, expandedTerms);
       debug.artstation_queries = artstationQueries;
+      let mergedArtstation = 0;
       for (const query of artstationQueries) {
+        debug.artstation_executed_queries.push(query);
         const itemsForQuery = await searchArtStationProjects(query, Math.max(20, limit * 3), { allowMature });
         debug.per_source_counts.merged_raw.artstation += itemsForQuery.length;
+        mergedArtstation += itemsForQuery.length;
         merged.push(...itemsForQuery.map(item => ({ ...item, query, source: 'artstation' })));
-        if (merged.length >= limit * 18) break;
+        if (mergedArtstation >= perSourceTarget) break;
       }
       if (expandedTerms.length) {
         anchorPhrases = Array.from(new Set([
@@ -551,9 +559,10 @@ function buildFanartDedupeKey(item) {
 
 function buildArtStationSearchQueries(baseQueries, expandedTerms) {
   const seeds = dedupeQueryStrings([
-    ...(Array.isArray(baseQueries) ? baseQueries : []),
-    ...(Array.isArray(expandedTerms) ? expandedTerms : [])
+    ...(Array.isArray(expandedTerms) ? expandedTerms : []),
+    ...(Array.isArray(baseQueries) ? baseQueries : [])
   ]);
+  seeds.sort((a, b) => scoreArtStationSeed(a) - scoreArtStationSeed(b));
   const out = [];
   for (const seed of seeds) {
     const cleaned = String(seed || '').trim();
@@ -566,6 +575,18 @@ function buildArtStationSearchQueries(baseQueries, expandedTerms) {
     if (!/\bartwork\b/.test(lower)) out.push(`${cleaned} artwork`);
   }
   return dedupeQueryStrings(out).slice(0, 16);
+}
+
+function scoreArtStationSeed(seed) {
+  const raw = String(seed || '').trim().toLowerCase();
+  if (!raw) return 999;
+  let score = 0;
+  const words = raw.split(/\s+/g).filter(Boolean);
+  score += words.length;
+  if (raw.includes('j.k. rowling') || raw.includes('jk rowling')) score += 5;
+  if (raw.includes(' and the ')) score += 2;
+  if (/\bfan\s*art\b|\bfanart\b|\billustration\b|\bartwork\b/.test(raw)) score += 1;
+  return score;
 }
 
 async function getArtStationExpandedTerms({ series, queries }) {
